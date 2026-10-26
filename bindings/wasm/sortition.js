@@ -5,6 +5,9 @@
 //   s.draw(10, 3, { seed: 1n });                  // [7, 2, 6]
 //   s.drawText("alice\nbob\ncarol", 2);           // ["bob", "alice"]
 //   s.drawData("- {id: 1}\n- {id: 2}", 1, { format: "yaml" });
+//   const lot = s.createSession(100, { seed: 1n });  // 続きから引ける抽選セッション
+//   lot.draw(3); const saved = lot.save();          // 保存して…
+//   s.loadSession(saved).draw(2);                   // …あとで続きから引く
 //   s.drawStages(["a", "b", "c", "d"], [{ name: "副賞", count: 3 }, { name: "大賞", count: 1 }]);
 
 const FORMATS = { json: 0, yaml: 1, toml: 2 };
@@ -17,6 +20,7 @@ const MESSAGES = {
   [-5]: "path not found or not an array",
   [-6]: "unsupported format",
   [-7]: "internal error",
+  [-8]: "invalid session state",
 };
 
 /** コアが返したエラー。code に SORTITION_ERR_* の値が入る。 */
@@ -209,9 +213,83 @@ export async function load(source) {
     });
   }
 
+  // 閉じ忘れても GC でコア側のセッションを解放する（明示的な close() が基本）
+  const registry = new FinalizationRegistry((handle) => e.sortition_session_free(handle));
+
+  /** 抽選セッション。ハンドルはコア側のヒープにあり、呼び出しごとの一時バッファとは別に生きる。 */
+  function wrapSession(handle) {
+    const token = {};
+    registry.register(token, handle, token);
+    const live = () => {
+      if (!handle) throw new Error("session is closed");
+      return handle;
+    };
+    return {
+      /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
+      draw(k) {
+        u32(k, "k");
+        return run(() => {
+          const out = alloc(4 * k);
+          const rc = e.sortition_session_draw(live(), k, out);
+          if (rc !== 0) throw new SortitionError(rc);
+          const dv = view();
+          return Array.from({ length: k }, (_, i) => dv.getUint32(out + 4 * i, true));
+        });
+      },
+      get remaining() {
+        return e.sortition_session_remaining(live());
+      },
+      get drawnCount() {
+        return e.sortition_session_drawn_count(live());
+      },
+      /** 状態を JSON 文字列で返す。引いた結果（"drawn"）も含む */
+      save() {
+        return run(() => {
+          const outPtr = alloc(4);
+          const rc = e.sortition_session_save(live(), outPtr);
+          if (rc !== 0) throw new SortitionError(rc);
+          const jsonPtr = view().getUint32(outPtr, true);
+          try {
+            return cString(jsonPtr);
+          } finally {
+            e.sortition_free(jsonPtr);
+          }
+        });
+      },
+      close() {
+        if (!handle) return;
+        registry.unregister(token);
+        e.sortition_session_free(handle);
+        handle = 0;
+      },
+    };
+  }
+
+  function createSession(n, { seed } = {}) {
+    u32(n, "n");
+    return run(() => {
+      const seedPtr = putSeed(seed);
+      const outPtr = alloc(4);
+      const rc = e.sortition_session_new(n, seedPtr, outPtr);
+      if (rc !== 0) throw new SortitionError(rc);
+      return wrapSession(view().getUint32(outPtr, true));
+    });
+  }
+
+  function loadSession(state) {
+    const data = encoder.encode(state);
+    return run(() => {
+      const textPtr = putBytes(data);
+      const outPtr = alloc(4);
+      const rc = e.sortition_session_load(textPtr, data.length, outPtr);
+      if (rc !== 0) throw new SortitionError(rc, cString(e.sortition_last_error()));
+      return wrapSession(view().getUint32(outPtr, true));
+    });
+  }
+
   const version = () => cString(e.sortition_version());
   /** リニアメモリの現在のサイズ（バイト）。リークの確認用 */
   const memoryBytes = () => e.memory.buffer.byteLength;
 
-  return { draw, drawText, drawData, drawStages, version, memoryBytes };
+  return { draw, drawText, drawData, drawStages, createSession, loadSession, version, memoryBytes };
 }

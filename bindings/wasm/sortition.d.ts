@@ -28,6 +28,19 @@ export interface StageResult<T> {
   winners: T[];
 }
 
+export interface Session {
+  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
+  draw(k: number): number[];
+  /** まだ引いていない数 */
+  readonly remaining: number;
+  /** ここまでに引いた数 */
+  readonly drawnCount: number;
+  /** 状態を JSON 文字列で返す。引いた結果（"drawn"）も含む */
+  save(): string;
+  /** コア側のセッションを解放する（以後の利用は Error）。二重に呼んでもよい */
+  close(): void;
+}
+
 export interface Sortition {
   /** 0..n-1 から k 個を重複なしで抽選する（選ばれた順） */
   draw(n: number, k: number, options?: DrawOptions): number[];
@@ -39,6 +52,13 @@ export interface Sortition {
   drawStages<T>(input: T[], stages: Stage[], options?: DrawOptions): StageResult<T>[];
   drawStages(input: string, stages: Stage[], options?: DrawOptions): StageResult<string>[];
   drawStages(input: string, stages: Stage[], options: DataOptions): StageResult<unknown>[];
+  /**
+   * 0..n-1 を母集団に、呼ぶたびに続きから非復元抽出するセッションを作る。
+   * seed 指定ありなら、何回に分けて引いても draw(n, k1 + k2 + ..., { seed }) と同じ並びになる
+   */
+  createSession(n: number, options?: DrawOptions): Session;
+  /** Session.save() の出力から復元する。不正な状態は SortitionError（code -8） */
+  loadSession(state: string): Session;
   version(): string;
   /** リニアメモリの現在のサイズ（バイト）。リークの確認用 */
   memoryBytes(): number;
