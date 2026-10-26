@@ -330,7 +330,7 @@ func TestForgottenSessionsAreFreed(t *testing.T) {
 }
 
 func TestTheCoreVersionIsReported(t *testing.T) {
-	if v := Version(); v != "0.1.0" {
+	if v := Version(); v != "0.1.1" {
 		t.Errorf("version = %q", v)
 	}
 }

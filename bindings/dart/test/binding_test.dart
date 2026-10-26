@@ -164,6 +164,6 @@ void main() {
   });
 
   test('the native version is reported', () {
-    expect(Lottery.version, '0.1.0');
+    expect(Lottery.version, '0.1.1');
   });
 }

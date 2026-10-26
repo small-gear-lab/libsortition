@@ -12,7 +12,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
     <PackageId>Sortition</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Description>Fair, repeatable and verifiable random lotteries (draws without replacement). A .NET binding of libsortition; it loads the native library.</Description>
     <Authors>Small Gear Lab; Marie</Authors>
     <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>

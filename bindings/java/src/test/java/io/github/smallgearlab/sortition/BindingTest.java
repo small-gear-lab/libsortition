@@ -216,6 +216,6 @@ class BindingTest {
 
     @Test
     void theNativeVersionIsReported() {
-        assertEquals("0.1.0", Lottery.version());
+        assertEquals("0.1.1", Lottery.version());
     }
 }

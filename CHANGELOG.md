@@ -6,6 +6,16 @@ A change to the draw algorithm (`libsortition-draw/1`), the seed rule, the candi
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-26
+
+Documentation only; the library and the command are the same as in 0.1.0.
+
+### Changed
+
+- The npm and NuGet pages now show how to install the package (`npm install libsortition-wasm`, `dotnet add package Sortition`).
+- The .NET, Java, Swift and Dart READMEs say that the shared library can be taken from the releases page.
+- Publishing to crates.io, npm and NuGet now runs from a workflow with Trusted Publishing, with no API keys.
+
 ## [0.1.0] - 2026-10-26
 
 The first release.

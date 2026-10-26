@@ -161,6 +161,6 @@ public class BindingTests
     [Fact]
     public void The_native_version_is_reported()
     {
-        Assert.Equal("0.1.0", Lottery.Version);
+        Assert.Equal("0.1.1", Lottery.Version);
     }
 }

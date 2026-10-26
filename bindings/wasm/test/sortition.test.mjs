@@ -10,7 +10,7 @@ const V = JSON.parse(readFileSync(new URL("../../../test-vectors/vectors.json", 
 const vectorItems = (v) => v.items_hex.map((h) => Buffer.from(h, "hex"));
 const vectorSets = () => Object.fromEntries(V.item_sets.map((v) => [v.name, vectorItems(v)]));
 
-test("version", () => assert.equal(s.version(), "0.1.0"));
+test("version", () => assert.equal(s.version(), "0.1.1"));
 
 test("draw: seed は再現可能で、ほかの言語バインディングと同じ結果になる", () => {
   assert.deepEqual(s.draw(10, 3, { seed: 1n }), [7, 2, 6]);

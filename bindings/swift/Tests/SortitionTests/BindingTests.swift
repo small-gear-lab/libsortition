@@ -141,6 +141,6 @@ private func code(_ body: () throws -> Void) -> Int? {
     }
 
     @Test func theNativeVersionIsReported() {
-        #expect(Lottery.version == "0.1.0")
+        #expect(Lottery.version == "0.1.1")
     }
 }

@@ -1,6 +1,6 @@
 {
   "name": "libsortition-wasm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fair, repeatable and verifiable random lotteries (draws without replacement) for browsers and Node.js. The WebAssembly build of libsortition, with no dependencies.",
   "type": "module",
   "main": "sortition.js",
