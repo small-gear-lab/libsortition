@@ -135,6 +135,23 @@ impl ItemSession {
         Ok(self.inner.draw(k)?.into_iter().map(|p| self.pick(p)).collect())
     }
 
+    /// 羃等キー付きで続きから `k` 個引く。同じキーと同じ `k` の再送は、状態を変えずに前回の結果を返す
+    /// （2 つ目の値が `true`）。詳しくは `Session::draw_keyed`。
+    pub fn draw_keyed(&mut self, k: u32, key: Option<&str>) -> Result<(Vec<Pick>, bool), i32> {
+        let d = self.inner.draw_keyed(k, key)?;
+        Ok((d.picks.into_iter().map(|p| self.pick(p)).collect(), d.replayed))
+    }
+
+    /// セッションの識別子（小文字 16 進 32 文字）
+    pub fn id(&self) -> String {
+        self.inner.id()
+    }
+
+    /// 状態を変えた `draw` の回数
+    pub fn revision(&self) -> u64 {
+        self.inner.revision()
+    }
+
     /// 状態を JSON 文字列に保存する。引いた候補の ID（`drawn`）と候補集合の指紋を含む。
     pub fn save(&self) -> String {
         let drawn: Vec<String> = self.drawn().iter().map(|p| to_hex(&p.id)).collect();
@@ -363,6 +380,69 @@ pub unsafe extern "C" fn sortition_item_session_draw(
         }
         Err(e) => e,
     }
+}
+
+/// C ABI: 羃等キー付きで続きから `k` 個引く。書き込み先は `sortition_items_draw` と同じ。
+/// キーの扱いと `replayed` は `sortition_session_draw_keyed` と同じ。
+///
+/// # Safety
+/// `s` は有効なセッション、`key` は NULL か NUL 終端文字列、`out_index` / `out_ids` は規約どおり、
+/// `replayed` は NULL か書き込み可能な `int32_t` であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_draw_keyed(
+    s: *mut ItemSession,
+    k: u32,
+    key: *const c_char,
+    out_index: *mut u32,
+    out_ids: *mut u8,
+    replayed: *mut i32,
+) -> i32 {
+    if s.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    if !replayed.is_null() {
+        *replayed = 0;
+    }
+    let key = match crate::session::key_arg(key) {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    match (*s).draw_keyed(k, key) {
+        Ok((picks, was_replayed)) => {
+            write_picks(&picks, out_index, out_ids);
+            if !replayed.is_null() {
+                *replayed = was_replayed as i32;
+            }
+            SORTITION_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// C ABI: 状態を変えた `draw` の回数。`s` が NULL なら 0。
+///
+/// # Safety
+/// `s` は NULL か有効なセッションであること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_revision(s: *const ItemSession) -> u64 {
+    if s.is_null() {
+        0
+    } else {
+        (*s).revision()
+    }
+}
+
+/// C ABI: セッションの識別子（小文字 16 進 32 文字 + NUL）を `out[0..33]` に書く。
+///
+/// # Safety
+/// `s` は有効なセッション、`out` は 33 バイト書ける領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_id(s: *const ItemSession, out: *mut u8) -> i32 {
+    if s.is_null() || out.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    crate::session::write_id((*s).id(), out);
+    SORTITION_OK
 }
 
 /// C ABI: まだ引いていない数。`s` が NULL なら 0。
@@ -600,6 +680,27 @@ mod tests {
         assert!(ItemSession::load("not json", &items).is_err());
         // 数値セッションの状態は別物として拒否する
         assert!(ItemSession::load(&Session::new(8, None).unwrap().save(), &items).is_err());
+    }
+
+    #[test]
+    fn keyed_draw_replays_across_reorder_and_reload() {
+        let items = names();
+        let mut s = ItemSession::new(&items, None).unwrap();
+        let (first, replayed) = s.draw_keyed(3, Some("r1")).unwrap();
+        assert!(!replayed);
+        assert_eq!((s.revision(), s.id().len()), (1, 32));
+        let state = s.save();
+
+        // 並びを変えて復元しても、同じキーの再送は前回の ID を返す（index は渡し直した配列の位置）
+        let mut shuffled = names();
+        shuffled.reverse();
+        let mut r = ItemSession::load(&state, &shuffled).unwrap();
+        assert_eq!(r.id(), s.id());
+        let (again, replayed) = r.draw_keyed(3, Some("r1")).unwrap();
+        assert!(replayed);
+        assert_eq!(ids_of(&again), ids_of(&first));
+        assert_eq!(r.save(), state);
+        assert_eq!(r.draw_keyed(2, Some("r1")), Err(crate::SORTITION_ERR_CONFLICT));
     }
 
     #[test]

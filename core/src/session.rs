@@ -19,11 +19,11 @@ use serde_json::{json, Value};
 
 use crate::hex;
 use crate::{
-    set_last_error, ChaChaRng, Source, Xoshiro256, CHACHA_LIMIT, SORTITION_ERR_INTERNAL, SORTITION_ERR_INVALID,
+    set_last_error, ChaChaRng, Source, Xoshiro256, CHACHA_LIMIT, SORTITION_ERR_CONFLICT, SORTITION_ERR_RNG, SORTITION_ERR_INTERNAL, SORTITION_ERR_INVALID,
     SORTITION_ERR_STATE, SORTITION_ERR_UTF8, SORTITION_OK,
 };
 
-const STATE_VERSION: u64 = 2;
+const STATE_VERSION: u64 = 3;
 
 /// 1 回分の `step` を元に戻すための記録
 struct Undo {
@@ -40,7 +40,31 @@ fn restore(map: &mut HashMap<u32, u32>, key: u32, old: Option<u32>) {
     };
 }
 
+/// 羃等キーの長さの上限（バイト）
+pub const MAX_KEY_LEN: usize = 128;
+
+/// 羃等キー付きで引いた 1 回分の記録。`drawn[start..start + count]` がそのときの結果。
+struct Call {
+    key: String,
+    start: u32,
+    count: u32,
+}
+
+/// `draw_keyed` の結果
+#[derive(Debug, PartialEq, Eq)]
+pub struct Drawn {
+    pub picks: Vec<u32>,
+    /// 同じキーの前回の結果をそのまま返した（状態は変わっていない）
+    pub replayed: bool,
+}
+
 pub struct Session {
+    /// セッションの識別子（作成時に OS から取った 16 バイト）
+    id: [u8; 16],
+    /// 状態を変えた `draw` の回数（`k > 0` で成功した呼び出し）。保存側の比較更新に使える
+    revision: u64,
+    /// 羃等キー付きの呼び出しの記録（引いた順）
+    calls: Vec<Call>,
     n: u32,
     src: Source,
     /// 引いた順の結果
@@ -56,7 +80,20 @@ impl Session {
             Some(s) => Source::Seeded(Xoshiro256::from_seed(s)),
             None => Source::Secure(ChaChaRng::from_os()?),
         };
-        Ok(Self { n, src, drawn: Vec::new(), swapped: HashMap::new() })
+        let mut id = [0u8; 16];
+        getrandom::fill(&mut id).map_err(|_| SORTITION_ERR_RNG)?;
+        Ok(Self { id, revision: 0, calls: Vec::new(), n, src, drawn: Vec::new(), swapped: HashMap::new() })
+    }
+
+    /// セッションの識別子（小文字 16 進 32 文字）
+    pub fn id(&self) -> String {
+        hex::encode(&self.id)
+    }
+
+    /// 状態を変えた `draw` の回数。保存側は「読んだ revision のときだけ更新する」ことで、
+    /// 同じ状態から別々に進めた更新の上書きを防げる。
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// 母集団の大きさ `n`
@@ -77,19 +114,55 @@ impl Session {
     /// 続きから `k` 個引く。`k` が残りを超えるなら何も消費せず `SORTITION_ERR_INVALID`。
     /// 途中で失敗した場合も状態は呼び出し前に戻る。
     pub fn draw(&mut self, k: u32) -> Result<Vec<u32>, i32> {
+        Ok(self.draw_keyed(k, None)?.picks)
+    }
+
+    /// 羃等キー付きで続きから `k` 個引く。
+    ///
+    /// 同じ `key` と同じ `k` の再送は、状態を変えずに前回の結果をそのまま返す（`replayed`）。
+    /// 同じ `key` で別の `k` なら `SORTITION_ERR_CONFLICT`。キーは 1〜128 バイト。
+    /// `k == 0` は何もせず、キーも記録しない。失敗した呼び出しは何も残さない。
+    pub fn draw_keyed(&mut self, k: u32, key: Option<&str>) -> Result<Drawn, i32> {
+        if let Some(key) = key {
+            if key.is_empty() || key.len() > MAX_KEY_LEN {
+                return Err(SORTITION_ERR_INVALID);
+            }
+            if let Some(c) = self.calls.iter().find(|c| c.key == key) {
+                if c.count != k {
+                    return Err(SORTITION_ERR_CONFLICT);
+                }
+                let picks = self.drawn[c.start as usize..(c.start + c.count) as usize].to_vec();
+                return Ok(Drawn { picks, replayed: true });
+            }
+        }
+        if k == 0 {
+            return Ok(Drawn { picks: Vec::new(), replayed: false });
+        }
+        let start = self.drawn.len() as u32;
+        let picks = self.draw_raw(k)?;
+        self.revision += 1;
+        if let Some(key) = key {
+            self.calls.push(Call { key: key.to_string(), start, count: k });
+        }
+        Ok(Drawn { picks, replayed: false })
+    }
+
+    fn draw_raw(&mut self, k: u32) -> Result<Vec<u32>, i32> {
         if k > self.remaining() {
             return Err(SORTITION_ERR_INVALID);
         }
         let start = self.drawn.len();
+        let rng_before = self.src.clone();
         let mut undo: Vec<Undo> = Vec::with_capacity(k as usize);
         for _ in 0..k {
             if let Err(e) = self.step(&mut undo) {
-                // 後ろから巻き戻す（OS 乱数の失敗でしか起きない）
+                // 後ろから巻き戻す（乱数の失敗でしか起きない）。乱数の位置も戻す
                 while let Some(u) = undo.pop() {
                     self.drawn.pop();
                     restore(&mut self.swapped, u.i, u.old_i);
                     restore(&mut self.swapped, u.j, u.old_j);
                 }
+                self.src = rng_before;
                 return Err(e);
             }
         }
@@ -127,8 +200,12 @@ impl Session {
         };
         let mut swapped: Vec<(u32, u32)> = self.swapped.iter().map(|(&k, &v)| (k, v)).collect();
         swapped.sort_unstable();
+        let calls: Vec<(&str, u32, u32)> = self.calls.iter().map(|c| (c.key.as_str(), c.start, c.count)).collect();
         json!({
             "version": STATE_VERSION,
+            "id": hex::encode(&self.id),
+            "revision": self.revision,
+            "calls": calls,
             "n": self.n,
             "rng": rng,
             "drawn": self.drawn,
@@ -146,6 +223,8 @@ impl Session {
             return Err(bad("unsupported state version"));
         }
         let to_u32 = |x: &Value| x.as_u64().and_then(|x| u32::try_from(x).ok());
+        let id = obj.get("id").and_then(Value::as_str).and_then(hex::decode::<16>).ok_or_else(|| bad("invalid id"))?;
+        let revision = obj.get("revision").and_then(Value::as_u64).ok_or_else(|| bad("invalid revision"))?;
         let n = obj.get("n").and_then(to_u32).ok_or_else(|| bad("invalid n"))?;
 
         let rng = obj.get("rng").and_then(Value::as_object).ok_or_else(|| bad("invalid rng"))?;
@@ -211,7 +290,33 @@ impl Session {
             return Err(bad("state is inconsistent"));
         }
 
-        Ok(Self { n, src, drawn, swapped })
+        // 羃等キーの記録: 引いた順に重なりなく並び、キーは重複しない。
+        // 各回は 1 個以上引くので、回数（revision）は引いた数を超えず、記録の数は revision 以下
+        let mut calls: Vec<Call> = Vec::new();
+        let mut end = 0u32;
+        for c in obj.get("calls").and_then(Value::as_array).ok_or_else(|| bad("invalid calls"))? {
+            let t = c.as_array().filter(|t| t.len() == 3).ok_or_else(|| bad("invalid calls"))?;
+            let (Some(key), Some(start), Some(count)) = (t[0].as_str(), to_u32(&t[1]), to_u32(&t[2])) else {
+                return Err(bad("invalid calls"));
+            };
+            let stop = start.checked_add(count);
+            if key.is_empty()
+                || key.len() > MAX_KEY_LEN
+                || count == 0
+                || start < end
+                || stop.map_or(true, |s| s > d)
+                || calls.iter().any(|p| p.key == key)
+            {
+                return Err(bad("invalid calls"));
+            }
+            end = start + count;
+            calls.push(Call { key: key.to_string(), start, count });
+        }
+        if revision > drawn.len() as u64 || (calls.len() as u64) > revision || (revision == 0) != drawn.is_empty() {
+            return Err(bad("invalid revision"));
+        }
+
+        Ok(Self { id, revision, calls, n, src, drawn, swapped })
     }
 }
 
@@ -258,6 +363,90 @@ pub unsafe extern "C" fn sortition_session_draw(s: *mut Session, k: u32, out: *m
         }
         Err(e) => e,
     }
+}
+
+/// 羃等キーの引数（NUL 終端、NULL ならキーなし）を取り出す。UTF-8 でなければ `SORTITION_ERR_UTF8`。
+///
+/// # Safety
+/// `key` は NULL か NUL 終端の文字列であること。
+pub(crate) unsafe fn key_arg<'a>(key: *const c_char) -> Result<Option<&'a str>, i32> {
+    if key.is_null() {
+        return Ok(None);
+    }
+    std::ffi::CStr::from_ptr(key).to_str().map(Some).map_err(|_| SORTITION_ERR_UTF8)
+}
+
+/// C ABI: 羃等キー付きで続きから `k` 個引いて `out[0..k]` に書く。
+///
+/// - `key` は NUL 終端 UTF-8（1〜128 バイト）。NULL ならキーなし（`sortition_session_draw` と同じ）。
+/// - 同じ `key` と同じ `k` の再送は、状態を変えずに前回の結果を書き、`*replayed` を 1 にする。
+///   同じ `key` で別の `k` は `SORTITION_ERR_CONFLICT`。
+/// - `replayed` は NULL でもよい。
+///
+/// # Safety
+/// `s` は有効なセッション、`key` は NULL か NUL 終端文字列、`out` は `k` 要素以上の書き込み可能領域、
+/// `replayed` は NULL か書き込み可能な `int32_t` であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_session_draw_keyed(
+    s: *mut Session,
+    k: u32,
+    key: *const c_char,
+    out: *mut u32,
+    replayed: *mut i32,
+) -> i32 {
+    if s.is_null() || (out.is_null() && k > 0) {
+        return SORTITION_ERR_INVALID;
+    }
+    if !replayed.is_null() {
+        *replayed = 0;
+    }
+    let key = match key_arg(key) {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    match (*s).draw_keyed(k, key) {
+        Ok(d) => {
+            if k > 0 {
+                std::ptr::copy_nonoverlapping(d.picks.as_ptr(), out, d.picks.len());
+            }
+            if !replayed.is_null() {
+                *replayed = d.replayed as i32;
+            }
+            SORTITION_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// C ABI: 状態を変えた `draw` の回数。保存側が「読んだ revision のときだけ更新する」ために使える。`s` が NULL なら 0。
+///
+/// # Safety
+/// `s` は NULL か有効なセッションであること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_session_revision(s: *const Session) -> u64 {
+    if s.is_null() {
+        0
+    } else {
+        (*s).revision()
+    }
+}
+
+/// C ABI: セッションの識別子（小文字 16 進 32 文字 + NUL）を `out[0..33]` に書く。
+///
+/// # Safety
+/// `s` は有効なセッション、`out` は 33 バイト書ける領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_session_id(s: *const Session, out: *mut u8) -> i32 {
+    if s.is_null() || out.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    write_id((*s).id(), out);
+    SORTITION_OK
+}
+
+pub(crate) unsafe fn write_id(id: String, out: *mut u8) {
+    std::ptr::copy_nonoverlapping(id.as_ptr(), out, id.len());
+    *out.add(id.len()) = 0;
 }
 
 /// C ABI: まだ引いていない数。`s` が NULL なら 0。
@@ -403,11 +592,15 @@ mod tests {
         let mut b = Session::load(&a.save()).unwrap();
         got.extend(b.draw(30).unwrap());
         assert_eq!(got, draw(200, 50, Some(9)).unwrap());
-        assert_eq!(b.save(), {
-            let mut c = Session::new(200, Some(9)).unwrap();
-            c.draw(50).unwrap();
-            c.save()
-        });
+        // 一括で引いた状態と、id と revision（呼び出しの回数）以外は一致する
+        let strip = |text: String| {
+            let mut v: Value = serde_json::from_str(&text).unwrap();
+            v.as_object_mut().unwrap().retain(|k, _| k != "id" && k != "revision");
+            v
+        };
+        let mut c = Session::new(200, Some(9)).unwrap();
+        c.draw(50).unwrap();
+        assert_eq!(strip(b.save()), strip(c.save()));
     }
 
     #[test]
@@ -440,8 +633,8 @@ mod tests {
             Session::load(&v.to_string()).err()
         };
         assert!(Session::load(&good.to_string()).is_ok());
-        assert!(mutate(&|v| v["version"] = json!(1)).is_some());
-        assert!(mutate(&|v| v["version"] = json!(3)).is_some());
+        assert!(mutate(&|v| v["version"] = json!(2)).is_some());
+        assert!(mutate(&|v| v["version"] = json!(4)).is_some());
         assert!(mutate(&|v| v["n"] = json!(3)).is_some());
         assert!(mutate(&|v| v["drawn"][0] = v["drawn"][1].clone()).is_some());
         assert!(mutate(&|v| v["drawn"][0] = json!(10)).is_some());
@@ -491,6 +684,143 @@ mod tests {
         assert!(mutate(&|v| v["rng"]["pos"] = json!("7"))); // 8 の倍数でない
         assert!(mutate(&|v| v["rng"]["pos"] = json!((CHACHA_LIMIT + 8).to_string())));
         assert!(mutate(&|v| v["rng"]["pos"] = json!(8))); // 文字列でない
+    }
+
+    #[test]
+    fn id_is_unique_and_revision_counts_state_changing_draws() {
+        let mut a = Session::new(20, Some(1)).unwrap();
+        let b = Session::new(20, Some(1)).unwrap();
+        assert_eq!(a.id().len(), 32);
+        assert_ne!(a.id(), b.id()); // シードが同じでも別のセッション
+        assert_eq!(a.revision(), 0);
+        a.draw(0).unwrap();
+        assert_eq!(a.revision(), 0); // k == 0 は何もしない
+        a.draw(3).unwrap();
+        a.draw(2).unwrap();
+        assert_eq!(a.revision(), 2);
+        assert!(a.draw(100).is_err());
+        assert_eq!(a.revision(), 2); // 失敗は数えない
+        let loaded = Session::load(&a.save()).unwrap();
+        assert_eq!((loaded.id(), loaded.revision()), (a.id(), 2));
+    }
+
+    #[test]
+    fn idempotency_key_replays_and_detects_conflict() {
+        let mut s = Session::new(50, None).unwrap();
+        let first = s.draw_keyed(3, Some("req-1")).unwrap();
+        assert!(!first.replayed);
+        let before = s.save();
+        // 同じキー・同じ k の再送は、状態を変えずに前回の結果を返す
+        let again = s.draw_keyed(3, Some("req-1")).unwrap();
+        assert_eq!((again.picks.clone(), again.replayed), (first.picks.clone(), true));
+        assert_eq!(s.save(), before);
+        // 別の k は衝突
+        assert_eq!(s.draw_keyed(4, Some("req-1")), Err(SORTITION_ERR_CONFLICT));
+        assert_eq!(s.draw_keyed(0, Some("req-1")), Err(SORTITION_ERR_CONFLICT));
+        assert_eq!(s.save(), before);
+        // 次のリクエストは続きを引く
+        let second = s.draw_keyed(2, Some("req-2")).unwrap();
+        assert!(!second.replayed);
+        assert!(second.picks.iter().all(|p| !first.picks.contains(p)));
+        // キーなしの呼び出しは記録されず、再送の対象にもならない
+        s.draw_keyed(1, None).unwrap();
+        assert_eq!(s.revision(), 3);
+        // k == 0 はキーを記録しない（あとで同じキーを別の k で使える）
+        assert!(s.draw_keyed(0, Some("req-3")).unwrap().picks.is_empty());
+        assert!(!s.draw_keyed(1, Some("req-3")).unwrap().replayed);
+    }
+
+    #[test]
+    fn idempotency_key_validation_and_failed_draws_leave_no_trace() {
+        let mut s = Session::new(5, None).unwrap();
+        assert_eq!(s.draw_keyed(1, Some("")), Err(SORTITION_ERR_INVALID));
+        assert_eq!(s.draw_keyed(1, Some(&"k".repeat(MAX_KEY_LEN + 1))), Err(SORTITION_ERR_INVALID));
+        assert!(s.draw_keyed(1, Some(&"k".repeat(MAX_KEY_LEN))).is_ok());
+        let before = s.save();
+        // 残りを超える要求は失敗し、キーも記録されない（同じキーで引き直せる）
+        assert_eq!(s.draw_keyed(9, Some("big")), Err(SORTITION_ERR_INVALID));
+        assert_eq!(s.save(), before);
+        assert!(s.draw_keyed(2, Some("big")).is_ok());
+    }
+
+    #[test]
+    fn replay_survives_save_load_and_stale_state_resend_is_identical() {
+        let mut s = Session::new(100, None).unwrap();
+        s.draw_keyed(4, Some("a")).unwrap();
+        let stale = s.save(); // "b" を引く前の状態
+        let b = s.draw_keyed(6, Some("b")).unwrap();
+        let after = s.save();
+
+        // 引いた後の状態を復元して同じキーを再送 → 前回の結果、状態は不変
+        let mut r = Session::load(&after).unwrap();
+        let replay = r.draw_keyed(6, Some("b")).unwrap();
+        assert_eq!((replay.picks.clone(), replay.replayed), (b.picks.clone(), true));
+        assert_eq!(r.save(), after);
+
+        // 引く前の古い状態に同じリクエストを送っても、同じ結果・同じ状態になる
+        let mut old = Session::load(&stale).unwrap();
+        let again = old.draw_keyed(6, Some("b")).unwrap();
+        assert_eq!((again.picks, again.replayed), (b.picks, false));
+        assert_eq!(old.save(), after);
+    }
+
+    #[test]
+    fn rejects_bad_calls_and_revision() {
+        let mut s = Session::new(30, Some(2)).unwrap();
+        s.draw_keyed(3, Some("a")).unwrap();
+        s.draw_keyed(2, Some("b")).unwrap();
+        let good: Value = serde_json::from_str(&s.save()).unwrap();
+        let bad = |f: &dyn Fn(&mut Value)| {
+            let mut v = good.clone();
+            f(&mut v);
+            Session::load(&v.to_string()).is_err()
+        };
+        assert!(!bad(&|_| {}));
+        assert!(bad(&|v| v["id"] = json!("abcd")));
+        assert!(bad(&|v| v.as_object_mut().unwrap().remove("id").map(|_| ()).unwrap()));
+        assert!(bad(&|v| v["revision"] = json!(0))); // 引いているのに 0
+        assert!(bad(&|v| v["revision"] = json!(1))); // 記録 2 件より少ない
+        assert!(bad(&|v| v["revision"] = json!(6))); // 引いた数 5 を超える
+        assert!(bad(&|v| v["calls"][1][0] = json!("a"))); // キーの重複
+        assert!(bad(&|v| v["calls"][0][0] = json!(""))); // 空のキー
+        assert!(bad(&|v| v["calls"][1][1] = json!(2))); // 前の記録と重なる
+        assert!(bad(&|v| v["calls"][1][2] = json!(4))); // 引いた数をはみ出す
+        assert!(bad(&|v| v["calls"][0][2] = json!(0))); // 0 個の記録
+        assert!(bad(&|v| v["calls"] = json!("x")));
+    }
+
+    #[test]
+    fn c_abi_keyed_draw_revision_and_id() {
+        unsafe {
+            let mut s: *mut Session = std::ptr::null_mut();
+            assert_eq!(sortition_session_new(30, std::ptr::null(), &mut s), SORTITION_OK);
+            let mut id = [0xffu8; 33];
+            assert_eq!(sortition_session_id(s, id.as_mut_ptr()), SORTITION_OK);
+            assert_eq!(id[32], 0);
+            assert_eq!(std::str::from_utf8(&id[..32]).unwrap(), (*s).id());
+
+            let (mut a, mut b) = ([0u32; 4], [0u32; 4]);
+            let mut replayed = -1i32;
+            let key = b"req-1\0".as_ptr() as *const c_char;
+            assert_eq!(sortition_session_draw_keyed(s, 4, key, a.as_mut_ptr(), &mut replayed), SORTITION_OK);
+            assert_eq!(replayed, 0);
+            assert_eq!(sortition_session_revision(s), 1);
+            assert_eq!(sortition_session_draw_keyed(s, 4, key, b.as_mut_ptr(), &mut replayed), SORTITION_OK);
+            assert_eq!((replayed, a), (1, b));
+            assert_eq!(sortition_session_revision(s), 1);
+            assert_eq!(sortition_session_draw_keyed(s, 3, key, b.as_mut_ptr(), &mut replayed), SORTITION_ERR_CONFLICT);
+            assert_eq!(replayed, 0);
+            // キーなし（NULL）、replayed が NULL でもよい
+            assert_eq!(sortition_session_draw_keyed(s, 4, std::ptr::null(), b.as_mut_ptr(), std::ptr::null_mut()), SORTITION_OK);
+            assert_eq!(sortition_session_revision(s), 2);
+            // UTF-8 でないキー、空のキー
+            let bad_utf8 = b"\xff\0".as_ptr() as *const c_char;
+            assert_eq!(sortition_session_draw_keyed(s, 1, bad_utf8, b.as_mut_ptr(), &mut replayed), SORTITION_ERR_UTF8);
+            let empty = b"\0".as_ptr() as *const c_char;
+            assert_eq!(sortition_session_draw_keyed(s, 1, empty, b.as_mut_ptr(), &mut replayed), SORTITION_ERR_INVALID);
+            assert_eq!(sortition_session_revision(std::ptr::null()), 0);
+            sortition_session_free(s);
+        }
     }
 
     #[test]

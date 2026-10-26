@@ -17,6 +17,7 @@ extern "C" {
 #define SORTITION_ERR_FORMAT  (-6) /* 未知の形式、またはビルドで無効化 */
 #define SORTITION_ERR_INTERNAL (-7) /* 内部エラー（パニックを捕捉） */
 #define SORTITION_ERR_STATE   (-8) /* 保存したセッション状態が不正 */
+#define SORTITION_ERR_CONFLICT (-9) /* 羃等キーが別の内容のリクエストで使われている */
 
 /* 0..n から k 個を重複なしで抽選し out[0..k] に書く。
  * seed が NULL なら OS 乱数、非 NULL ならその値で再現可能。 */
@@ -83,6 +84,24 @@ int32_t sortition_session_save(const sortition_session *s, char **out);
  * （詳細は sortition_last_error）。 */
 int32_t sortition_session_load(const uint8_t *text, size_t len, sortition_session **out);
 
+/* 羃等キー付きで続きから k 個引く。key は NUL 終端 UTF-8（1〜128 バイト）で、NULL ならキーなし
+ * （sortition_session_draw と同じ）。同じ key と同じ k の再送は、状態を変えずに前回の結果を out に書き、
+ * *replayed を 1 にする。同じ key で別の k は SORTITION_ERR_CONFLICT。k == 0 は何もせずキーも記録しない。
+ * 失敗した呼び出しは何も残さない。replayed は NULL でもよい。
+ *
+ * 状態の中の乱数と記録で結果が決まるので、リクエストが重なっても二重に引かない:
+ *  - 引いた後の状態に同じ key を再送 → 前回の結果（replayed = 1）
+ *  - 引く前の古い状態に同じ key と k を送る → 同じ結果、同じ状態になる */
+int32_t sortition_session_draw_keyed(sortition_session *s, uint32_t k, const char *key,
+                                     uint32_t *out, int32_t *replayed);
+
+/* 状態を変えた draw の回数。保存側が「読んだ revision のときだけ更新する」ことで、
+ * 同じ状態から別々に進めた更新の上書きを防げる。 */
+uint64_t sortition_session_revision(const sortition_session *s);
+
+/* セッションの識別子（小文字 16 進 32 文字 + NUL）を out[0..33] に書く。作成時に OS から取った値。 */
+int32_t sortition_session_id(const sortition_session *s, uint8_t *out);
+
 void sortition_session_free(sortition_session *s); /* NULL は無視 */
 
 /* ---- バイト列の候補を抽選する ----
@@ -121,6 +140,11 @@ int32_t sortition_item_session_new(const uint8_t *data, const size_t *lens, size
  * SORTITION_ERR_INVALID（状態は変わらない）。 */
 int32_t sortition_item_session_draw(sortition_item_session *s, uint32_t k,
                                     uint32_t *out_index, uint8_t *out_ids);
+/* 羃等キー付きで続きから k 個引く。キーの扱いは sortition_session_draw_keyed と同じ。 */
+int32_t sortition_item_session_draw_keyed(sortition_item_session *s, uint32_t k, const char *key,
+                                          uint32_t *out_index, uint8_t *out_ids, int32_t *replayed);
+uint64_t sortition_item_session_revision(const sortition_item_session *s);
+int32_t sortition_item_session_id(const sortition_item_session *s, uint8_t *out); /* 33 バイト */
 uint32_t sortition_item_session_remaining(const sortition_item_session *s);
 uint32_t sortition_item_session_drawn_count(const sortition_item_session *s);
 /* 状態を JSON 文字列として *out に返す（sortition_free で解放） */

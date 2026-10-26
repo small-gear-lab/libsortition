@@ -40,6 +40,8 @@ pub const SORTITION_ERR_INTERNAL: i32 = -7;
 
 /// 保存したセッション状態が不正（形式・バージョン・中身の矛盾）
 pub const SORTITION_ERR_STATE: i32 = -8;
+/// 羃等キーが、別の内容のリクエスト（別の `k`）で既に使われている
+pub const SORTITION_ERR_CONFLICT: i32 = -9;
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
@@ -52,6 +54,7 @@ fn set_last_error(msg: &str) {
 }
 
 /// xoshiro256** （シード指定時の再現可能な乱数）
+#[derive(Clone)]
 struct Xoshiro256 {
     s: [u64; 4],
 }
@@ -85,6 +88,7 @@ impl Xoshiro256 {
 
 /// ChaCha20 の鍵流を使う暗号論的乱数。状態は（鍵, 読み出し位置）だけなので保存・復元できる。
 /// 鍵を知らない者は、出力をいくら見ても以降の出力を予測できない。
+#[derive(Clone)]
 struct ChaChaRng {
     key: [u8; 32],
     /// 鍵流の読み出し位置（バイト）。8 の倍数
@@ -114,6 +118,7 @@ impl ChaChaRng {
     }
 }
 
+#[derive(Clone)]
 enum Source {
     /// 状態を持たず、呼ぶたびに OS から取る（一回きりの `draw` 用）
     Os,
