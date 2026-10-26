@@ -4,19 +4,76 @@
 
 [日本語](README.ja.md)
 
-A small library for unbiased random lotteries: it picks `k` of `n` candidates without replacement. One Rust core with a C ABI, and bindings for Node.js, PHP, Python, Ruby and WebAssembly.
+A small library for fair random lotteries: it picks `k` of `n` candidates without replacement, in a way that anyone can repeat and check afterwards. One Rust core with a C ABI, bindings for Node.js, PHP, Python, Ruby and WebAssembly, and the `sortition` command.
 
 > **Status: experimental (0.1).** The interface may change before 1.0.
 
+**Try it:** the [demo](https://small-gear-lab.github.io/libsortition/next/demo/) draws prizes from a list you paste in. All builds are listed at <https://small-gear-lab.github.io/libsortition/>.
+
+## Quick start
+
+The programs below print the same winners (`dave`, then `bob`) for the same candidates and seed, and so do the C and C++ programs in [examples/c](examples/c/demo.c).
+
+**Command line** ([more](#command-line)):
+
+```sh
+cargo install --path cli                 # from a checkout
+printf 'alice\nbob\ncarol\ndave\n' > names.txt
+sortition draw names.txt --seed "my seed" -k 2
+```
+
+**Python** (from a checkout):
+
+```python
+import sys; sys.path.insert(0, "bindings/python")   # after `cargo build --release`
+import sortition
+
+people = ["alice", "bob", "carol", "dave"]
+seed = sortition.seed_from_text("my seed")
+for pick in sortition.draw_items(people, 2, seed=seed):
+    print(people[pick.index])
+```
+
+**JavaScript** (WebAssembly):
+
+```js
+import { load, seedFromText } from "./sortition.js";   // bindings/wasm, after bindings/wasm/build.sh
+const s = await load();
+
+const people = ["alice", "bob", "carol", "dave"];
+const seed = await seedFromText("my seed");
+for (const pick of s.drawItems(people, 2, { seed })) console.log(people[pick.index]);
+```
+
+**C and C++** ([examples/c/demo.c](examples/c/demo.c) builds as both): after `cargo build --release`, run `make -C examples/c run`. Include [core/include/sortition.h](core/include/sortition.h) and link `libsortition`.
+
+## Which function to use
+
+Use the candidate functions (`draw_items` / `drawItems`, `draw_stages` / `drawStages`, the item sessions, and the CLI) when the winners must not depend on the order of your list: each candidate gets an ID from its bytes, and the draw works on the IDs in sorted order. The other entry points (`draw(n, k)`, and drawing from text, JSON, YAML or TOML) return positions in the list as you gave it, so a reordered list gives different winners.
+
 ## What you get
 
-- **Sampling without replacement.** `draw(n, k)` picks `k` distinct numbers from `0..n`, in the order they were drawn.
-- **Reproducible when you want it.** With no seed the OS random source is used; with a seed (a `u64`) the same seed gives the same result.
-- **Candidates from text or data.** One candidate per line of text (surrounding spaces are trimmed, empty lines are dropped), or an array inside JSON, YAML or TOML (`path` such as `a.b.0` says where the array is). YAML aliases, custom tags and multiple documents are rejected.
-- **Sessions: keep drawing where you left off.** A session holds `0..n` and draws without replacement each time you call it. Its state can be saved as JSON and restored later, so the draw can continue from a database or a file. With a seed, drawing in several steps gives the same order as one big `draw(n, k1 + k2 + ..., seed)`. A saved state that is malformed or inconsistent is rejected.
-- **Resume after a reload or an expired HTTP session, with no server.** Draws use a cryptographic random stream (ChaCha20) whose state is saved with the session, so the same saved state always gives the same next draw. Every draw can carry an idempotency key, so a retried request returns the previous result instead of drawing twice. In the browser, `persist.js` keeps sessions in IndexedDB; with a server, `seal()` turns a state into a tamper-proof token (XChaCha20-Poly1305) that is safe to hand to the browser.
-- **Any bytes as candidates, identified by stable IDs.** Pass arbitrary byte strings and each one gets a unique ID that does not depend on its position: `SHA-256(prefix ‖ bytes ‖ occurrence)`, where the occurrence number tells identical byte strings apart. Candidates are sorted by ID before drawing, so the same candidate set and seed give the same winners whatever the input order. A set fingerprint (a hash of the sorted IDs) can be published before the draw and checked afterwards. Item sessions save the drawn IDs and the fingerprint, and can only be resumed with the same candidate set (in any order).
-- **A C ABI.** The header is [core/include/sortition.h](core/include/sortition.h): `sortition_draw`, `sortition_draw_text`, `sortition_draw_data`, `sortition_session_*`, `sortition_item_*`, `sortition_items_draw`, `sortition_free`, `sortition_last_error`, `sortition_version`.
+- **Fair draws.** Sampling without replacement with no modulo bias (rejection sampling). `draw(n, k)` picks `k` distinct numbers from `0..n`.
+- **Repeatable and checkable.** A seed string whose SHA-256 you can publish before the draw (the commitment), and a fingerprint of the candidate set that does not depend on its order. The same candidates and seed give the same winners in every language and in the command. The rules are written down in [docs/SPEC.md](docs/SPEC.md), with [test vectors](test-vectors/vectors.json) and an independent [reference implementation](test-vectors/reference.py).
+- **Any bytes as candidates.** Each candidate gets an ID that does not depend on its position, so the winners do not depend on the order of your list. Identical entries stay separate candidates. Lines of text and arrays in JSON, YAML or TOML work too.
+- **Prize stages.** Draw the first prize, then the next from the rest; nobody wins twice.
+- **Sessions you can pause.** Save the state as JSON and keep drawing later where you left off. A retried request carries an idempotency key and never draws twice. A sealed token (XChaCha20-Poly1305) lets a browser hold a state it cannot read or change, and `persist.js` keeps sessions in IndexedDB so that a reload loses nothing.
+- **A C ABI** ([core/include/sortition.h](core/include/sortition.h)) under all of it.
+
+## Install and build
+
+Nothing is published yet (0.1). The first release is planned for crates.io (`sortition` and `sortition-cli`), GitHub Releases (the command and the shared library), npm (`libsortition-wasm`) and the GitHub Pages builds. Until then, build from a checkout:
+
+```sh
+cargo build --release                         # target/release/libsortition.so (.dylib, .dll)
+cargo build --release --no-default-features   # without the YAML and TOML parsers
+cargo install --path cli                      # the `sortition` command
+bindings/wasm/build.sh                        # the WebAssembly build; needs: rustup target add wasm32-unknown-unknown
+```
+
+The `yaml` and `toml` features are on by default. The Python and Ruby bindings load the shared library built above (through `LIBSORTITION_PATH`, next to the module, and in `target/release`); the PHP extension and the Node.js addon link against it.
+
+**Node.js:** use the WebAssembly build (`libsortition-wasm`); it needs no compiler and runs in Node.js. The native addon in `bindings/node` (`cd bindings/node && npm install && npm run build`) is for experiments and only builds on Linux and macOS.
 
 ## Layout
 
@@ -30,16 +87,7 @@ A small library for unbiased random lotteries: it picks `k` of `n` candidates wi
 | `bindings/ruby/` | Ruby (Fiddle, standard library only) |
 | `bindings/wasm/` | WebAssembly for browsers and Node (no dependencies), with a demo |
 
-## Build
-
-```sh
-cargo build --release          # target/release/libsortition.so (.dylib, .dll)
-cargo build --release --no-default-features   # without the YAML and TOML parsers
-```
-
-The `yaml` and `toml` features are on by default.
-
-The bindings load the shared library built above. Python and Ruby look for it through `LIBSORTITION_PATH`, next to the module, and in `target/release`.
+## Using the libraries
 
 ```python
 import sys; sys.path.insert(0, "bindings/python")
@@ -122,11 +170,6 @@ new_token = lot.seal(key)                          # send picks and new_token ba
 Because the next draw is a function of the saved state, sending an old token again gives the same result, and the idempotency key covers a token that has already advanced. A server that stores sessions can also compare `revision` before it overwrites a record. The idea is the same in every binding (`seal` / `unseal` / `sealKeyId`).
 
 Nothing here stops an organizer from throwing the result away and starting a new session. Publish the session `id`, the set fingerprint and the seed commitment before the draw.
-
-```sh
-cd bindings/node && npm install && npm run build && npm test   # Node.js
-bindings/wasm/build.sh                                          # needs: rustup target add wasm32-unknown-unknown
-```
 
 ## Command line
 

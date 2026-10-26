@@ -4,19 +4,76 @@
 
 [English](README.md)
 
-偏りのない無作為抽選のための小さなライブラリです。`n` 個の候補から `k` 個を重複なしで選びます（非復元抽出）。C ABI を持つ Rust 製のコアが 1 つあり、Node.js、PHP、Python、Ruby、WebAssembly 向けのバインディングがあります。
+公平な無作為抽選のための小さなライブラリです。`n` 個の候補から `k` 個を重複なしで選び、あとから誰でも同じ抽選を繰り返して確かめられます。C ABI を持つ Rust 製のコアが 1 つあり、Node.js、PHP、Python、Ruby、WebAssembly 向けのバインディングと、`sortition` コマンドがあります。
 
 > **状態: 実験的（0.1）。** インターフェースは 1.0 までに変わるかもしれません。
 
+**試す:** [デモ](https://small-gear-lab.github.io/libsortition/next/demo/)では、貼り付けたリストから賞ごとに抽選できます。すべてのビルドは <https://small-gear-lab.github.io/libsortition/> に並んでいます。
+
+## クイックスタート
+
+次のプログラムは、同じ候補と seed なら、同じ当選者（`dave`、次に `bob`）を出します。[examples/c](examples/c/demo.c) の C と C++ のプログラムも同じです。
+
+**コマンドライン**（[詳しく](#コマンドライン)）:
+
+```sh
+cargo install --path cli                 # チェックアウトから
+printf 'alice\nbob\ncarol\ndave\n' > names.txt
+sortition draw names.txt --seed "my seed" -k 2
+```
+
+**Python**（チェックアウトから）:
+
+```python
+import sys; sys.path.insert(0, "bindings/python")   # `cargo build --release` のあと
+import sortition
+
+people = ["alice", "bob", "carol", "dave"]
+seed = sortition.seed_from_text("my seed")
+for pick in sortition.draw_items(people, 2, seed=seed):
+    print(people[pick.index])
+```
+
+**JavaScript**（WebAssembly）:
+
+```js
+import { load, seedFromText } from "./sortition.js";   // bindings/wasm。bindings/wasm/build.sh のあと
+const s = await load();
+
+const people = ["alice", "bob", "carol", "dave"];
+const seed = await seedFromText("my seed");
+for (const pick of s.drawItems(people, 2, { seed })) console.log(people[pick.index]);
+```
+
+**C と C++**（[examples/c/demo.c](examples/c/demo.c) は両方でビルドできます）: `cargo build --release` のあと、`make -C examples/c run` を実行します。[core/include/sortition.h](core/include/sortition.h) を include して、`libsortition` にリンクしてください。
+
+## どの関数を使うか
+
+当選者がリストの並びに依ってはいけないときは、候補の関数（`draw_items` / `drawItems`、`draw_stages` / `drawStages`、候補のセッション、CLI）を使ってください。各候補はバイト列から ID が決まり、抽選は ID を昇順に並べた上で行われます。ほかの入口（`draw(n, k)`、テキストや JSON・YAML・TOML からの抽選）は、渡したリストの位置を返すので、リストの並びを変えると当選者も変わります。
+
 ## できること
 
-- **非復元抽出。** `draw(n, k)` は `0..n` から重複しない `k` 個の数を、選ばれた順に返します。
-- **必要なときは再現できる。** シードなしなら OS の乱数源を使い、シード（`u64`）を指定すると同じシードで同じ結果になります。
-- **テキストやデータから候補を取る。** 1 行 1 候補のテキスト（前後の空白は除き、空行は捨てます）か、JSON・YAML・TOML の中にある配列（`a.b.0` のような `path` で場所を指定）。YAML のエイリアス・独自タグ・複数ドキュメントは拒否します。
-- **セッションで続きから引ける。** セッションは `0..n` を母集団として、呼ぶたびに非復元抽出します。状態は JSON で保存して後から復元できるので、DB やファイルに預けて抽選を続けられます。シードを指定すれば、何回に分けて引いても `draw(n, k1 + k2 + ..., seed)` を一度に引いたときと同じ並びになります。形式が壊れている、または中身が矛盾している保存状態は拒否します。
-- **リロードや HTTP セッション切れのあとも、サーバーなしで続きから引ける。** 乱数には暗号論的な乱数（ChaCha20）を使い、その状態をセッションと一緒に保存します。同じ保存状態からは必ず同じ次の抽選になります。どの抽選にも羃等キーを付けられ、再送したリクエストは二重に引かず、前回の結果を返します。ブラウザでは `persist.js` が IndexedDB にセッションを保存します。サーバーを挟む場合は、`seal()` で状態を改ざんできないトークン（XChaCha20-Poly1305）にして、ブラウザに渡せます。
-- **任意のバイト列を候補にして、位置に依らない一意な ID で識別する。** 任意のバイト列を渡すと、各候補に `SHA-256(接頭辞 ‖ バイト列 ‖ 出現番号)` の ID が付きます。出現番号は同じバイト列どうしを区別するためのものです。抽選は ID の昇順に並べてから引くので、同じ候補集合とシードなら、入力の並びが違っても同じ候補が当選します。候補集合の指紋（昇順の ID のハッシュ）を抽選前に公開しておけば、あとから検証できます。バイト列版のセッションは、引いた ID と指紋を保存し、同じ候補集合（並びは問わない）でだけ再開できます。
-- **C ABI。** ヘッダは [core/include/sortition.h](core/include/sortition.h) で、`sortition_draw`、`sortition_draw_text`、`sortition_draw_data`、`sortition_session_*`、`sortition_item_*`、`sortition_items_draw`、`sortition_free`、`sortition_last_error`、`sortition_version` があります。
+- **公平な抽選。** 剰余の偏りのない非復元抽出（棄却法）。`draw(n, k)` は `0..n` から重複しない `k` 個の数を選びます。
+- **繰り返せて、確かめられる。** 抽選の前に公開できる seed 文字列の SHA-256（コミット値）と、並びに依らない候補集合の指紋があります。同じ候補と seed なら、どの言語でもコマンドでも同じ当選者になります。規則は [docs/SPEC.md](docs/SPEC.md)（概要は[日本語](docs/SPEC.ja.md)）に書いてあり、[テストベクトル](test-vectors/vectors.json)と、独立した[参照実装](test-vectors/reference.py)があります。
+- **任意のバイト列を候補にできる。** 各候補には位置に依らない ID が付くので、当選者はリストの並びに依りません。同じ内容の項目は別の候補のままです。テストの行や、JSON・YAML・TOML の配列も使えます。
+- **賞ごとの抽選。** 最初の賞を引き、残りから次の賞を引きます。同じ人が 2 つに当たることはありません。
+- **途中で止められるセッション。** 状態を JSON で保存して、あとで続きから引けます。再送されたリクエストは羃等キーで、二重に引きません。封をしたトークン（XChaCha20-Poly1305）で、ブラウザに、読めず変えられない状態を預けられます。`persist.js` は IndexedDB にセッションを保存するので、リロードしても何も失われません。
+- **C ABI**（[core/include/sortition.h](core/include/sortition.h)）が、そのすべての土台です。
+
+## インストールとビルド
+
+まだ何も公開していません（0.1）。最初のリリースでは、crates.io（`sortition` と `sortition-cli`）、GitHub Releases（コマンドと共有ライブラリ）、npm（`libsortition-wasm`）、GitHub Pages のビルドを公開する予定です。それまでは、チェックアウトからビルドしてください。
+
+```sh
+cargo build --release                         # target/release/libsortition.so（.dylib、.dll）
+cargo build --release --no-default-features   # YAML と TOML のパーサなし
+cargo install --path cli                      # `sortition` コマンド
+bindings/wasm/build.sh                        # WebAssembly のビルド。事前に rustup target add wasm32-unknown-unknown
+```
+
+`yaml` と `toml` の feature は既定で有効です。Python と Ruby のバインディングは、上でビルドした共有ライブラリを読み込みます（`LIBSORTITION_PATH`、モジュールの隣、`target/release` の順に探します）。PHP 拡張と Node.js のアドオンは、これにリンクします。
+
+**Node.js:** WebAssembly 版（`libsortition-wasm`）を使ってください。コンパイラが要らず、Node.js でそのまま動きます。`bindings/node` のネイティブアドオン（`cd bindings/node && npm install && npm run build`）は実験用で、Linux と macOS でしかビルドできません。
 
 ## 構成
 
@@ -30,16 +87,7 @@
 | `bindings/ruby/` | Ruby（Fiddle、標準ライブラリのみ） |
 | `bindings/wasm/` | ブラウザと Node 向けの WebAssembly（依存なし）とデモ |
 
-## ビルド
-
-```sh
-cargo build --release          # target/release/libsortition.so（.dylib、.dll）
-cargo build --release --no-default-features   # YAML と TOML のパーサなし
-```
-
-`yaml` と `toml` の feature は既定で有効です。
-
-バインディングは、上でビルドした共有ライブラリを読み込みます。Python と Ruby は `LIBSORTITION_PATH`、モジュールの隣、`target/release` の順に探します。
+## ライブラリの使い方
 
 ```python
 import sys; sys.path.insert(0, "bindings/python")
@@ -122,11 +170,6 @@ new_token = lot.seal(key)                          # picks と new_token をブ�
 次の抽選は保存状態だけで決まるので、古いトークンを送り直しても同じ結果になります。すでに進んだトークンが再送された場合は、羃等キーが二重に引くのを防ぎます。セッションを保存するサーバーなら、レコードを上書きする前に `revision` を比べることもできます。考え方はどのバインディングでも同じです（`seal` / `unseal` / `sealKeyId`）。
 
 主催者が結果を捨てて、新しいセッションを作り直すことは、この仕組みでは防げません。抽選の前に、セッションの `id`、候補集合の指紋、seed のコミット値を公開してください。
-
-```sh
-cd bindings/node && npm install && npm run build && npm test   # Node.js
-bindings/wasm/build.sh                                          # 事前に rustup target add wasm32-unknown-unknown
-```
 
 ## コマンドライン
 

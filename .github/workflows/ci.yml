@@ -36,6 +36,8 @@ jobs:
       # wasm には OS の乱数源がないので、.cargo/config.toml の custom backend で解く（ビルドできることの確認）
       - run: cargo clippy --locked --release --target wasm32-unknown-unknown -p sortition -- -D warnings
       - run: cargo build --release --locked -p sortition
+      # C ABI を C99 と C++17 の両方から使えること（examples/c は、ほかのバインディングと同じ当選者を出す）
+      - run: make -C examples/c check
       # crates.io に出す crate に、ライセンスと NOTICE が実体で入っていること。
       # core/ のそれらはルートへのシンボリックリンクなので、壊れたり別の内容のコピーに置き換わったりしていないか確かめる
       - name: The crate package contains the license files

@@ -23,3 +23,7 @@ bindings/php/.deps
 bindings/php/*.dep
 bindings/node/build/
 bindings/wasm/sortition.wasm
+
+# examples/c
+examples/c/demo
+examples/c/demo-cpp
