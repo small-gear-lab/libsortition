@@ -41,6 +41,26 @@ export interface Session {
   close(): void;
 }
 
+/** 候補。string は UTF-8、バイナリは ArrayBuffer / TypedArray */
+export type Candidate = string | ArrayBuffer | ArrayBufferView;
+
+export interface Pick {
+  /** 渡した items の中の位置（復元したセッションでは渡し直した items の中の位置） */
+  index: number;
+  /** 候補の ID（SHA-256、小文字 16 進 64 文字） */
+  id: string;
+}
+
+export interface ItemSession {
+  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
+  draw(k: number): Pick[];
+  readonly remaining: number;
+  readonly drawnCount: number;
+  /** 状態を JSON 文字列で返す。引いた候補の ID（"drawn"）と候補集合の指紋（"fingerprint"）を含む */
+  save(): string;
+  close(): void;
+}
+
 export interface Sortition {
   /** 0..n-1 から k 個を重複なしで抽選する（選ばれた順） */
   draw(n: number, k: number, options?: DrawOptions): number[];
@@ -59,6 +79,19 @@ export interface Sortition {
   createSession(n: number, options?: DrawOptions): Session;
   /** Session.save() の出力から復元する。不正な状態は SortitionError（code -8） */
   loadSession(state: string): Session;
+  /**
+   * 各候補の ID を items と同じ並びで返す。ID = SHA-256(接頭辞 || バイト列 || 出現番号) で、
+   * 同じバイト列が複数あっても出現番号が混ざるので全候補で一意
+   */
+  itemIds(items: Candidate[]): string[];
+  /** 候補集合の指紋。items の並びに依らない（抽選前にシードと一緒に公開すると後から検証できる） */
+  itemFingerprint(items: Candidate[]): string;
+  /** 候補を ID の昇順に並べてから k 個引く。同じ候補集合とシードなら、items の並びが違っても同じ候補が当選する */
+  drawItems(items: Candidate[], k: number, options?: DrawOptions): Pick[];
+  /** 候補集合を固定した、保存・復元できる抽選セッション */
+  createItemSession(items: Candidate[], options?: DrawOptions): ItemSession;
+  /** save() の出力と同じ候補集合（並びは違ってよい）から復元する。違えば SortitionError（code -8） */
+  loadItemSession(state: string, items: Candidate[]): ItemSession;
   version(): string;
   /** リニアメモリの現在のサイズ（バイト）。リークの確認用 */
   memoryBytes(): number;

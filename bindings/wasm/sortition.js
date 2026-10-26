@@ -8,6 +8,7 @@
 //   const lot = s.createSession(100, { seed: 1n });  // 続きから引ける抽選セッション
 //   lot.draw(3); const saved = lot.save();          // 保存して…
 //   s.loadSession(saved).draw(2);                   // …あとで続きから引く
+//   s.drawItems(["alice", new Uint8Array([1, 2])], 1, { seed: 1n }); // [{ index, id }]（任意のバイト列）
 //   s.drawStages(["a", "b", "c", "d"], [{ name: "副賞", count: 3 }, { name: "大賞", count: 1 }]);
 
 const FORMATS = { json: 0, yaml: 1, toml: 2 };
@@ -214,12 +215,15 @@ export async function load(source) {
   }
 
   // 閉じ忘れても GC でコア側のセッションを解放する（明示的な close() が基本）
-  const registry = new FinalizationRegistry((handle) => e.sortition_session_free(handle));
+  const registry = new FinalizationRegistry(({ free, handle }) => free(handle));
 
-  /** 抽選セッション。ハンドルはコア側のヒープにあり、呼び出しごとの一時バッファとは別に生きる。 */
-  function wrapSession(handle) {
+  /**
+   * セッション共通の殻。ハンドルはコア側のヒープにあり、呼び出しごとの一時バッファとは別に生きる。
+   * t は種類ごとの C 関数の呼び方: { draw(handle, k) → 配列, remaining, drawnCount, save, free }
+   */
+  function wrapSession(handle, t) {
     const token = {};
-    registry.register(token, handle, token);
+    registry.register(token, { free: t.free, handle }, token);
     const live = () => {
       if (!handle) throw new Error("session is closed");
       return handle;
@@ -228,25 +232,19 @@ export async function load(source) {
       /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
       draw(k) {
         u32(k, "k");
-        return run(() => {
-          const out = alloc(4 * k);
-          const rc = e.sortition_session_draw(live(), k, out);
-          if (rc !== 0) throw new SortitionError(rc);
-          const dv = view();
-          return Array.from({ length: k }, (_, i) => dv.getUint32(out + 4 * i, true));
-        });
+        return run(() => t.draw(live(), k));
       },
       get remaining() {
-        return e.sortition_session_remaining(live());
+        return t.remaining(live());
       },
       get drawnCount() {
-        return e.sortition_session_drawn_count(live());
+        return t.drawnCount(live());
       },
-      /** 状態を JSON 文字列で返す。引いた結果（"drawn"）も含む */
+      /** 状態を JSON 文字列で返す */
       save() {
         return run(() => {
           const outPtr = alloc(4);
-          const rc = e.sortition_session_save(live(), outPtr);
+          const rc = t.save(live(), outPtr);
           if (rc !== 0) throw new SortitionError(rc);
           const jsonPtr = view().getUint32(outPtr, true);
           try {
@@ -259,11 +257,25 @@ export async function load(source) {
       close() {
         if (!handle) return;
         registry.unregister(token);
-        e.sortition_session_free(handle);
+        t.free(handle);
         handle = 0;
       },
     };
   }
+
+  const numberSession = {
+    draw(handle, k) {
+      const out = alloc(4 * k);
+      const rc = e.sortition_session_draw(handle, k, out);
+      if (rc !== 0) throw new SortitionError(rc);
+      const dv = view();
+      return Array.from({ length: k }, (_, i) => dv.getUint32(out + 4 * i, true));
+    },
+    remaining: (h) => e.sortition_session_remaining(h),
+    drawnCount: (h) => e.sortition_session_drawn_count(h),
+    save: (h, outPtr) => e.sortition_session_save(h, outPtr),
+    free: (h) => e.sortition_session_free(h),
+  };
 
   function createSession(n, { seed } = {}) {
     u32(n, "n");
@@ -272,7 +284,7 @@ export async function load(source) {
       const outPtr = alloc(4);
       const rc = e.sortition_session_new(n, seedPtr, outPtr);
       if (rc !== 0) throw new SortitionError(rc);
-      return wrapSession(view().getUint32(outPtr, true));
+      return wrapSession(view().getUint32(outPtr, true), numberSession);
     });
   }
 
@@ -283,7 +295,123 @@ export async function load(source) {
       const outPtr = alloc(4);
       const rc = e.sortition_session_load(textPtr, data.length, outPtr);
       if (rc !== 0) throw new SortitionError(rc, cString(e.sortition_last_error()));
-      return wrapSession(view().getUint32(outPtr, true));
+      return wrapSession(view().getUint32(outPtr, true), numberSession);
+    });
+  }
+
+  // ---- バイト列の候補 ----
+  // 各候補は ID（SHA-256、小文字 16 進 64 文字）に変換され、ID の昇順に並べてから引かれる。
+  // 同じバイト列が複数あっても出現番号が混ざるので ID は一意。
+
+  const toHex = (ptr) =>
+    Array.from(mem().subarray(ptr, ptr + 32), (b) => b.toString(16).padStart(2, "0")).join("");
+
+  /** 候補（string は UTF-8、Uint8Array / ArrayBuffer / TypedArray はそのまま）をバイト列にそろえる */
+  function toChunks(items) {
+    return Array.from(items, (item) => {
+      if (typeof item === "string") return encoder.encode(item);
+      if (item instanceof ArrayBuffer) return new Uint8Array(item);
+      if (ArrayBuffer.isView(item)) return new Uint8Array(item.buffer, item.byteOffset, item.byteLength);
+      throw new TypeError("candidate must be a string, ArrayBuffer or a typed array");
+    });
+  }
+
+  /** 連結バッファと長さ配列（wasm32 の usize は 4 バイト）をリニアメモリに置く */
+  function putItems(chunks) {
+    const total = chunks.reduce((a, c) => a + c.length, 0);
+    const data = alloc(total);
+    const lens = alloc(4 * chunks.length);
+    let off = 0;
+    chunks.forEach((c, i) => {
+      mem().set(c, data + off);
+      view().setUint32(lens + 4 * i, c.length, true);
+      off += c.length;
+    });
+    return { data, lens, count: chunks.length };
+  }
+
+  const readPicks = (indexes, ids, k) => {
+    const dv = view();
+    return Array.from({ length: k }, (_, i) => ({ index: dv.getUint32(indexes + 4 * i, true), id: toHex(ids + 32 * i) }));
+  };
+
+  /** 各候補の ID（小文字 16 進 64 文字）を items と同じ並びで返す */
+  function itemIds(items) {
+    const chunks = toChunks(items);
+    return run(() => {
+      const { data, lens, count } = putItems(chunks);
+      const out = alloc(32 * count);
+      const rc = e.sortition_item_ids(data, lens, count, out);
+      if (rc !== 0) throw new SortitionError(rc);
+      return Array.from({ length: count }, (_, i) => toHex(out + 32 * i));
+    });
+  }
+
+  /** 候補集合の指紋（小文字 16 進 64 文字）。items の並びに依らない */
+  function itemFingerprint(items) {
+    const chunks = toChunks(items);
+    return run(() => {
+      const { data, lens, count } = putItems(chunks);
+      const out = alloc(32);
+      const rc = e.sortition_item_fingerprint(data, lens, count, out);
+      if (rc !== 0) throw new SortitionError(rc);
+      return toHex(out);
+    });
+  }
+
+  /** items から k 個を重複なしで抽選する。同じ候補集合とシードなら、items の並びが違っても同じ候補が当選する */
+  function drawItems(items, k, { seed } = {}) {
+    u32(k, "k");
+    const chunks = toChunks(items);
+    return run(() => {
+      const { data, lens, count } = putItems(chunks);
+      const seedPtr = putSeed(seed);
+      const indexes = alloc(4 * k);
+      const ids = alloc(32 * k);
+      const rc = e.sortition_items_draw(data, lens, count, k, seedPtr, indexes, ids);
+      if (rc !== 0) throw new SortitionError(rc);
+      return readPicks(indexes, ids, k);
+    });
+  }
+
+  const itemSession = {
+    draw(handle, k) {
+      const indexes = alloc(4 * k);
+      const ids = alloc(32 * k);
+      const rc = e.sortition_item_session_draw(handle, k, indexes, ids);
+      if (rc !== 0) throw new SortitionError(rc);
+      return readPicks(indexes, ids, k);
+    },
+    remaining: (h) => e.sortition_item_session_remaining(h),
+    drawnCount: (h) => e.sortition_item_session_drawn_count(h),
+    save: (h, outPtr) => e.sortition_item_session_save(h, outPtr),
+    free: (h) => e.sortition_item_session_free(h),
+  };
+
+  /** 候補集合を固定した抽選セッションを作る */
+  function createItemSession(items, { seed } = {}) {
+    const chunks = toChunks(items);
+    return run(() => {
+      const { data, lens, count } = putItems(chunks);
+      const seedPtr = putSeed(seed);
+      const outPtr = alloc(4);
+      const rc = e.sortition_item_session_new(data, lens, count, seedPtr, outPtr);
+      if (rc !== 0) throw new SortitionError(rc);
+      return wrapSession(view().getUint32(outPtr, true), itemSession);
+    });
+  }
+
+  /** save() の出力と、同じ候補集合（並びは違ってよい）から復元する。違えば SortitionError（code -8） */
+  function loadItemSession(state, items) {
+    const stateBytes = encoder.encode(state);
+    const chunks = toChunks(items);
+    return run(() => {
+      const statePtr = putBytes(stateBytes);
+      const { data, lens, count } = putItems(chunks);
+      const outPtr = alloc(4);
+      const rc = e.sortition_item_session_load(statePtr, stateBytes.length, data, lens, count, outPtr);
+      if (rc !== 0) throw new SortitionError(rc, cString(e.sortition_last_error()));
+      return wrapSession(view().getUint32(outPtr, true), itemSession);
     });
   }
 
@@ -291,5 +419,6 @@ export async function load(source) {
   /** リニアメモリの現在のサイズ（バイト）。リークの確認用 */
   const memoryBytes = () => e.memory.buffer.byteLength;
 
-  return { draw, drawText, drawData, drawStages, createSession, loadSession, version, memoryBytes };
+  return { draw, drawText, drawData, drawStages, createSession, loadSession,
+    itemIds, itemFingerprint, drawItems, createItemSession, loadItemSession, version, memoryBytes };
 }
