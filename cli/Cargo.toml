@@ -20,5 +20,5 @@ path = "src/main.rs"
 # 候補は 1 行 1 候補のテキストなので、YAML / TOML の読み込みは要らない
 sortition = { version = "0.1.0", path = "../core", default-features = false }
 clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
-getrandom = "0.3"
+getrandom = "0.4"
 serde_json = { version = "1", features = ["preserve_order"] }
