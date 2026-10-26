@@ -80,6 +80,51 @@ int32_t sortition_session_load(const uint8_t *text, size_t len, sortition_sessio
 
 void sortition_session_free(sortition_session *s); /* NULL は無視 */
 
+/* ---- バイト列の候補を抽選する ----
+ * 各候補を並び順に依存しない一意な ID（SHA-256 のバイト列、32 バイト）に変換し、ID の昇順に
+ * 並べた上で番号を引く。同じ候補集合とシードなら、入力の並びが違っても同じ候補が当選する。
+ *
+ * ID = SHA-256("libsortition/candidate/v1\0" || バイト列 || 出現番号)。出現番号は、同じバイト列が
+ * 入力の先頭から数えて何個目かで、0 始まりの 8 バイト・リトルエンディアン。同じバイト列が
+ * 複数あっても別候補として数え、ID は全候補で一意になる。
+ *
+ * 候補は「連結したバッファ data ＋ 各候補の長さ lens[0..count]」で渡す。
+ * data は lens の合計バイト以上読める領域であること（長さ 0 の候補も可）。 */
+
+/* 各候補の ID を入力と同じ並びで out_ids[0..count*32] に書く */
+int32_t sortition_item_ids(const uint8_t *data, const size_t *lens, size_t count, uint8_t *out_ids);
+
+/* 候補集合の指紋（32 バイト）を書く。ID を昇順に並べたものの SHA-256 で、入力の並びに依らない。
+ * 抽選前にシードと一緒に公開しておくと、あとから同じ候補集合だったか検証できる。 */
+int32_t sortition_item_fingerprint(const uint8_t *data, const size_t *lens, size_t count,
+                                   uint8_t *out_fingerprint);
+
+/* 候補から k 個を一度だけ抽選する。当選した候補の「入力内の位置」を out_index[0..k]、
+ * ID を out_ids[0..k*32] に書く（どちらも NULL なら書かない）。k > count は SORTITION_ERR_INVALID。 */
+int32_t sortition_items_draw(const uint8_t *data, const size_t *lens, size_t count, uint32_t k,
+                             const uint64_t *seed, uint32_t *out_index, uint8_t *out_ids);
+
+/* 候補集合を固定した抽選セッション（保存・復元つき）。
+ * 保存状態には引いた候補の ID と候補集合の指紋が入る。復元では同じ候補集合（並びは違ってよい）を
+ * 渡し直し、違えば SORTITION_ERR_STATE。復元後の out_index は渡し直した配列の中の位置になる。
+ * 1 つのセッションを複数スレッドから同時に使ってはいけない。 */
+typedef struct sortition_item_session sortition_item_session;
+
+int32_t sortition_item_session_new(const uint8_t *data, const size_t *lens, size_t count,
+                                   const uint64_t *seed, sortition_item_session **out);
+/* 続きから k 個引く。書き込み先は sortition_items_draw と同じ。k が残りを超えると
+ * SORTITION_ERR_INVALID（状態は変わらない）。 */
+int32_t sortition_item_session_draw(sortition_item_session *s, uint32_t k,
+                                    uint32_t *out_index, uint8_t *out_ids);
+uint32_t sortition_item_session_remaining(const sortition_item_session *s);
+uint32_t sortition_item_session_drawn_count(const sortition_item_session *s);
+/* 状態を JSON 文字列として *out に返す（sortition_free で解放） */
+int32_t sortition_item_session_save(const sortition_item_session *s, char **out);
+int32_t sortition_item_session_load(const uint8_t *state, size_t state_len,
+                                    const uint8_t *data, const size_t *lens, size_t count,
+                                    sortition_item_session **out);
+void sortition_item_session_free(sortition_item_session *s); /* NULL は無視 */
+
 /* ホストが呼び出し用バッファを確保する（WASM のようにリニアメモリへ直接書き込む環境向け）。
  * sortition_dealloc には確保時と同じ len を渡す。 */
 uint8_t *sortition_alloc(size_t len);

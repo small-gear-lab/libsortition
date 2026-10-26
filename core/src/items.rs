@@ -1,0 +1,685 @@
+//! 任意のバイト列を候補にした抽選。
+//!
+//! 各候補を「並び順に依存しない一意な ID」に変換し、ID の昇順に並べた上で番号を引く。
+//! 同じ候補集合とシードなら、入力の並びが違っても同じ候補が当選する。
+//!
+//! - ID は `SHA-256(接頭辞 ‖ バイト列 ‖ 出現番号)`。同じバイト列が複数あれば、先頭から
+//!   数えた出現番号（0 始まり、8 バイトのリトルエンディアン）を混ぜて別候補にする。
+//! - 保存状態には「候補集合の指紋」を入れ、復元時に渡された候補と照合する。
+
+use std::collections::HashMap;
+use std::ffi::{c_char, CString};
+
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use crate::session::{Session, StateError};
+use crate::{
+    set_last_error, SORTITION_ERR_INTERNAL, SORTITION_ERR_INVALID, SORTITION_ERR_STATE,
+    SORTITION_ERR_UTF8, SORTITION_OK,
+};
+
+/// 候補の ID（SHA-256）
+pub type Id = [u8; 32];
+
+const ID_PREFIX: &[u8] = b"libsortition/candidate/v1\0";
+const SET_PREFIX: &[u8] = b"libsortition/set/v1\0";
+const STATE_VERSION: u64 = 1;
+
+/// 当選した候補。`index` は入力配列の中の位置、`id` はその候補の ID。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pick {
+    pub index: u32,
+    pub id: Id,
+}
+
+/// 各候補の ID を入力と同じ並びで返す。
+pub fn candidate_ids(items: &[&[u8]]) -> Vec<Id> {
+    let mut seen: HashMap<&[u8], u64> = HashMap::with_capacity(items.len());
+    items
+        .iter()
+        .map(|&bytes| {
+            let occurrence = seen.entry(bytes).or_insert(0);
+            let mut h = Sha256::new();
+            h.update(ID_PREFIX);
+            h.update(bytes);
+            h.update(occurrence.to_le_bytes());
+            *occurrence += 1;
+            h.finalize().into()
+        })
+        .collect()
+}
+
+/// 候補集合の指紋。ID を昇順に並べたものの SHA-256 なので、入力の並びに依らない。
+pub fn set_fingerprint(ids: &[Id]) -> Id {
+    let mut sorted: Vec<&Id> = ids.iter().collect();
+    sorted.sort_unstable();
+    fingerprint_of_sorted(sorted.into_iter())
+}
+
+fn fingerprint_of_sorted<'a>(ids: impl ExactSizeIterator<Item = &'a Id>) -> Id {
+    let mut h = Sha256::new();
+    h.update(SET_PREFIX);
+    h.update((ids.len() as u64).to_le_bytes());
+    for id in ids {
+        h.update(id);
+    }
+    h.finalize().into()
+}
+
+fn to_hex(id: &Id) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn from_hex(s: &str) -> Option<Id> {
+    if s.len() != 64 || !s.is_ascii() {
+        return None;
+    }
+    let mut id = [0u8; 32];
+    for (slot, pair) in id.iter_mut().zip(s.as_bytes().chunks(2)) {
+        *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(id)
+}
+
+/// 候補を ID 昇順に並べたときの対応表（昇順の位置 → 入力の位置）と、昇順の ID。
+fn canonical_order(items: &[&[u8]]) -> Result<(Vec<u32>, Vec<Id>), i32> {
+    u32::try_from(items.len()).map_err(|_| SORTITION_ERR_INVALID)?;
+    let ids = candidate_ids(items);
+    let mut order: Vec<u32> = (0..items.len() as u32).collect();
+    order.sort_unstable_by_key(|&i| ids[i as usize]);
+    let sorted: Vec<Id> = order.iter().map(|&i| ids[i as usize]).collect();
+    // SHA-256 の衝突は現実的にないが、起きたら一意性が崩れるので黙って進めない
+    if sorted.windows(2).any(|w| w[0] == w[1]) {
+        return Err(SORTITION_ERR_INTERNAL);
+    }
+    Ok((order, sorted))
+}
+
+/// バイト列の候補に対する抽選セッション。
+pub struct ItemSession {
+    inner: Session,
+    /// 昇順の位置 → 入力の位置
+    order: Vec<u32>,
+    /// 昇順の ID
+    ids: Vec<Id>,
+    fingerprint: Id,
+}
+
+impl ItemSession {
+    /// 候補集合を固定してセッションを作る。候補が 2^32 個以上なら `SORTITION_ERR_INVALID`。
+    pub fn new(items: &[&[u8]], seed: Option<u64>) -> Result<Self, i32> {
+        let (order, ids) = canonical_order(items)?;
+        let fingerprint = fingerprint_of_sorted(ids.iter());
+        Ok(Self { inner: Session::new(ids.len() as u32, seed), order, ids, fingerprint })
+    }
+
+    pub fn remaining(&self) -> u32 {
+        self.inner.remaining()
+    }
+
+    pub fn drawn_count(&self) -> u32 {
+        self.inner.drawn().len() as u32
+    }
+
+    /// 候補集合の指紋
+    pub fn fingerprint(&self) -> Id {
+        self.fingerprint
+    }
+
+    fn pick(&self, pos: u32) -> Pick {
+        Pick { index: self.order[pos as usize], id: self.ids[pos as usize] }
+    }
+
+    /// これまでに引いた候補（引いた順）
+    pub fn drawn(&self) -> Vec<Pick> {
+        self.inner.drawn().iter().map(|&p| self.pick(p)).collect()
+    }
+
+    /// 続きから `k` 個引く。`k` が残りを超えるなら状態を変えずに `SORTITION_ERR_INVALID`。
+    pub fn draw(&mut self, k: u32) -> Result<Vec<Pick>, i32> {
+        Ok(self.inner.draw(k)?.into_iter().map(|p| self.pick(p)).collect())
+    }
+
+    /// 状態を JSON 文字列に保存する。引いた候補の ID（`drawn`）と候補集合の指紋を含む。
+    pub fn save(&self) -> String {
+        let drawn: Vec<String> = self.drawn().iter().map(|p| to_hex(&p.id)).collect();
+        let session: Value = serde_json::from_str(&self.inner.save()).expect("session state is JSON");
+        json!({
+            "version": STATE_VERSION,
+            "kind": "items",
+            "fingerprint": to_hex(&self.fingerprint),
+            "drawn": drawn,
+            "session": session,
+        })
+        .to_string()
+    }
+
+    /// `save` の出力と、同じ候補集合（並びは違ってよい）から復元する。
+    /// 候補集合が違う、または状態が矛盾していれば `StateError`。
+    pub fn load(state: &str, items: &[&[u8]]) -> Result<Self, StateError> {
+        let bad = |m: &str| StateError(m.to_string());
+        let v: Value = serde_json::from_str(state).map_err(|e| StateError(format!("invalid state: {e}")))?;
+        let obj = v.as_object().ok_or_else(|| bad("state is not an object"))?;
+        if obj.get("version").and_then(Value::as_u64) != Some(STATE_VERSION)
+            || obj.get("kind").and_then(Value::as_str) != Some("items")
+        {
+            return Err(bad("unsupported state version or kind"));
+        }
+        let saved_fp = obj
+            .get("fingerprint")
+            .and_then(Value::as_str)
+            .and_then(from_hex)
+            .ok_or_else(|| bad("invalid fingerprint"))?;
+
+        let (order, ids) = canonical_order(items).map_err(|_| bad("invalid candidates"))?;
+        let fingerprint = fingerprint_of_sorted(ids.iter());
+        if fingerprint != saved_fp {
+            return Err(bad("candidates do not match the saved state"));
+        }
+
+        let inner = Session::load(&obj.get("session").ok_or_else(|| bad("missing session"))?.to_string())?;
+        if inner.population() as usize != ids.len() {
+            return Err(bad("state is inconsistent"));
+        }
+        let me = Self { inner, order, ids, fingerprint };
+
+        let saved_drawn: Vec<&str> = obj
+            .get("drawn")
+            .and_then(Value::as_array)
+            .ok_or_else(|| bad("invalid drawn"))?
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<_>>()
+            .ok_or_else(|| bad("invalid drawn"))?;
+        let actual: Vec<String> = me.drawn().iter().map(|p| to_hex(&p.id)).collect();
+        if saved_drawn != actual {
+            return Err(bad("state is inconsistent"));
+        }
+        Ok(me)
+    }
+}
+
+/// `items` から `k` 個を重複なしで抽選する。並び順に依らず、同じ集合とシードなら同じ候補が当選する。
+pub fn draw_items(items: &[&[u8]], k: u32, seed: Option<u64>) -> Result<Vec<Pick>, i32> {
+    ItemSession::new(items, seed)?.draw(k)
+}
+
+// ---- C ABI ----
+// 候補は「連結したバッファ `data` ＋ 各候補の長さ `lens[0..count]`」で渡す。
+// `data` は `lens` の合計バイト以上読める領域であること。
+
+unsafe fn gather<'a>(data: *const u8, lens: *const usize, count: usize) -> Result<Vec<&'a [u8]>, i32> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if lens.is_null() {
+        return Err(SORTITION_ERR_INVALID);
+    }
+    let lens = std::slice::from_raw_parts(lens, count);
+    let mut total = 0usize;
+    for &l in lens {
+        total = total.checked_add(l).ok_or(SORTITION_ERR_INVALID)?;
+    }
+    if data.is_null() && total > 0 {
+        return Err(SORTITION_ERR_INVALID);
+    }
+    let mut items = Vec::with_capacity(count);
+    let mut off = 0usize;
+    for &l in lens {
+        items.push(if l == 0 { &[][..] } else { std::slice::from_raw_parts(data.add(off), l) });
+        off += l;
+    }
+    Ok(items)
+}
+
+unsafe fn write_picks(picks: &[Pick], out_index: *mut u32, out_id: *mut u8) {
+    for (i, p) in picks.iter().enumerate() {
+        if !out_index.is_null() {
+            *out_index.add(i) = p.index;
+        }
+        if !out_id.is_null() {
+            std::ptr::copy_nonoverlapping(p.id.as_ptr(), out_id.add(32 * i), 32);
+        }
+    }
+}
+
+/// C ABI: 各候補の ID（32 バイト）を入力と同じ並びで `out_ids[0..count*32]` に書く。
+///
+/// # Safety
+/// `data` / `lens` は上の規約どおり、`out_ids` は `count * 32` バイト書ける領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_ids(data: *const u8, lens: *const usize, count: usize, out_ids: *mut u8) -> i32 {
+    if out_ids.is_null() && count > 0 {
+        return SORTITION_ERR_INVALID;
+    }
+    match gather(data, lens, count) {
+        Ok(items) => {
+            for (i, id) in candidate_ids(&items).iter().enumerate() {
+                std::ptr::copy_nonoverlapping(id.as_ptr(), out_ids.add(32 * i), 32);
+            }
+            SORTITION_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// C ABI: 候補集合の指紋（32 バイト）を `out_fingerprint` に書く。並びに依らない。
+///
+/// # Safety
+/// `data` / `lens` は上の規約どおり、`out_fingerprint` は 32 バイト書ける領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_fingerprint(
+    data: *const u8,
+    lens: *const usize,
+    count: usize,
+    out_fingerprint: *mut u8,
+) -> i32 {
+    if out_fingerprint.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    match gather(data, lens, count) {
+        Ok(items) => {
+            let fp = set_fingerprint(&candidate_ids(&items));
+            std::ptr::copy_nonoverlapping(fp.as_ptr(), out_fingerprint, 32);
+            SORTITION_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// C ABI: 候補から `k` 個を一度だけ抽選する。当選した候補の入力内の位置を `out_index[0..k]`、
+/// ID を `out_ids[0..k*32]` に書く（どちらも NULL なら書かない）。
+///
+/// # Safety
+/// `data` / `lens` / `seed` は規約どおり、`out_index` は `k` 要素、`out_ids` は `k * 32` バイト書ける領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_items_draw(
+    data: *const u8,
+    lens: *const usize,
+    count: usize,
+    k: u32,
+    seed: *const u64,
+    out_index: *mut u32,
+    out_ids: *mut u8,
+) -> i32 {
+    let seed = if seed.is_null() { None } else { Some(*seed) };
+    let items = match gather(data, lens, count) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    match draw_items(&items, k, seed) {
+        Ok(picks) => {
+            write_picks(&picks, out_index, out_ids);
+            SORTITION_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// C ABI: 候補集合を固定した抽選セッションを作る。`*out` は `sortition_item_session_free` で解放。
+///
+/// # Safety
+/// `data` / `lens` / `seed` は規約どおり、`out` は書き込み可能なポインタ 1 個分の領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_new(
+    data: *const u8,
+    lens: *const usize,
+    count: usize,
+    seed: *const u64,
+    out: *mut *mut ItemSession,
+) -> i32 {
+    if out.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    *out = std::ptr::null_mut();
+    let seed = if seed.is_null() { None } else { Some(*seed) };
+    let items = match gather(data, lens, count) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    match ItemSession::new(&items, seed) {
+        Ok(s) => {
+            *out = Box::into_raw(Box::new(s));
+            SORTITION_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// C ABI: 続きから `k` 個引く。書き込み先は `sortition_items_draw` と同じ。
+/// `k` が残りを超えると `SORTITION_ERR_INVALID`（状態は変わらない）。
+///
+/// # Safety
+/// `s` は有効なセッション、`out_index` / `out_ids` は規約どおり。同じセッションを複数スレッドから同時に使わないこと。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_draw(
+    s: *mut ItemSession,
+    k: u32,
+    out_index: *mut u32,
+    out_ids: *mut u8,
+) -> i32 {
+    if s.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    match (*s).draw(k) {
+        Ok(picks) => {
+            write_picks(&picks, out_index, out_ids);
+            SORTITION_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// C ABI: まだ引いていない数。`s` が NULL なら 0。
+///
+/// # Safety
+/// `s` は NULL か有効なセッションであること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_remaining(s: *const ItemSession) -> u32 {
+    if s.is_null() {
+        0
+    } else {
+        (*s).remaining()
+    }
+}
+
+/// C ABI: ここまでに引いた数。`s` が NULL なら 0。
+///
+/// # Safety
+/// `s` は NULL か有効なセッションであること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_drawn_count(s: *const ItemSession) -> u32 {
+    if s.is_null() {
+        0
+    } else {
+        (*s).drawn_count()
+    }
+}
+
+/// C ABI: 状態を JSON 文字列として `*out` に返す（`sortition_free` で解放）。
+///
+/// # Safety
+/// `s` は有効なセッション、`out` は書き込み可能な `char*` 1 個分の領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_save(s: *const ItemSession, out: *mut *mut c_char) -> i32 {
+    if out.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    *out = std::ptr::null_mut();
+    if s.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    match CString::new((*s).save()) {
+        Ok(c) => {
+            *out = c.into_raw();
+            SORTITION_OK
+        }
+        Err(_) => {
+            set_last_error("internal error: NUL in output");
+            SORTITION_ERR_INTERNAL
+        }
+    }
+}
+
+/// C ABI: 保存した状態を、同じ候補集合（並びは違ってよい）から復元する。
+/// 候補集合が違う・状態が不正なら `SORTITION_ERR_STATE`（詳細は `sortition_last_error`）。
+///
+/// # Safety
+/// `state` は `state_len` バイト読める領域、`data` / `lens` は規約どおり、`out` は書き込み可能なポインタ 1 個分の領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_load(
+    state: *const u8,
+    state_len: usize,
+    data: *const u8,
+    lens: *const usize,
+    count: usize,
+    out: *mut *mut ItemSession,
+) -> i32 {
+    if out.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    *out = std::ptr::null_mut();
+    if state.is_null() && state_len > 0 {
+        set_last_error("state is NULL");
+        return SORTITION_ERR_INVALID;
+    }
+    let bytes: &[u8] = if state_len == 0 { &[] } else { std::slice::from_raw_parts(state, state_len) };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        set_last_error("state is not valid UTF-8");
+        return SORTITION_ERR_UTF8;
+    };
+    let items = match gather(data, lens, count) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    match std::panic::catch_unwind(|| ItemSession::load(text, &items)) {
+        Ok(Ok(s)) => {
+            *out = Box::into_raw(Box::new(s));
+            SORTITION_OK
+        }
+        Ok(Err(e)) => {
+            set_last_error(&e.0);
+            SORTITION_ERR_STATE
+        }
+        Err(_) => {
+            set_last_error("internal error: panic");
+            SORTITION_ERR_INTERNAL
+        }
+    }
+}
+
+/// C ABI: セッションを解放する。NULL は無視する。
+///
+/// # Safety
+/// `s` は `sortition_item_session_new` / `_load` が返した未解放のポインタか NULL であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_free(s: *mut ItemSession) {
+    if !s.is_null() {
+        drop(Box::from_raw(s));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names() -> Vec<&'static [u8]> {
+        vec![b"alice", b"bob", b"carol", b"dave", b"erin", b"frank", b"grace", b"heidi"]
+    }
+
+    fn ids_of(picks: &[Pick]) -> Vec<Id> {
+        picks.iter().map(|p| p.id).collect()
+    }
+
+    #[test]
+    fn id_is_sha256_of_prefix_bytes_occurrence() {
+        // printf 'libsortition/candidate/v1\0abc\0\0\0\0\0\0\0\0' | sha256sum
+        assert_eq!(
+            to_hex(&candidate_ids(&[b"abc"])[0]),
+            "3b39139043226007aae3c88c03f4a1867e3cea04126ee893f8b395f7eb97899b"
+        );
+    }
+
+    #[test]
+    fn duplicates_get_distinct_ids_and_binary_is_fine() {
+        let items: Vec<&[u8]> = vec![b"x", b"x", b"", b"", b"\xff\x00\xfe", b"x"];
+        let ids = candidate_ids(&items);
+        let mut uniq = ids.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), items.len());
+        // 同じバイト列でも、先頭からの出現番号が違えば別 ID
+        assert_ne!(ids[0], ids[1]);
+        assert_ne!(ids[2], ids[3]);
+    }
+
+    #[test]
+    fn result_does_not_depend_on_input_order() {
+        let a = names();
+        let mut b = names();
+        b.reverse();
+        b.swap(1, 4);
+        for seed in 0..20u64 {
+            let pa = draw_items(&a, 5, Some(seed)).unwrap();
+            let pb = draw_items(&b, 5, Some(seed)).unwrap();
+            assert_eq!(ids_of(&pa), ids_of(&pb));
+            // index は各入力配列の中の位置で、指す候補は同じ
+            let bytes_a: Vec<_> = pa.iter().map(|p| a[p.index as usize]).collect();
+            let bytes_b: Vec<_> = pb.iter().map(|p| b[p.index as usize]).collect();
+            assert_eq!(bytes_a, bytes_b);
+        }
+        assert_eq!(set_fingerprint(&candidate_ids(&a)), set_fingerprint(&candidate_ids(&b)));
+    }
+
+    #[test]
+    fn draw_all_with_duplicates_hits_each_index_once() {
+        let items: Vec<&[u8]> = vec![b"a", b"a", b"b", b"a"];
+        let mut idx: Vec<u32> = draw_items(&items, 4, None).unwrap().iter().map(|p| p.index).collect();
+        idx.sort_unstable();
+        assert_eq!(idx, [0, 1, 2, 3]);
+        assert_eq!(draw_items(&items, 5, None), Err(SORTITION_ERR_INVALID));
+        assert_eq!(draw_items(&[], 0, None).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn split_draws_equal_one_draw() {
+        let items = names();
+        let whole = draw_items(&items, 6, Some(3)).unwrap();
+        let mut s = ItemSession::new(&items, Some(3)).unwrap();
+        let mut got = s.draw(2).unwrap();
+        got.extend(s.draw(4).unwrap());
+        assert_eq!(got, whole);
+        assert_eq!(s.drawn(), got);
+        assert_eq!(s.remaining(), 2);
+    }
+
+    #[test]
+    fn save_load_resumes_even_if_order_changed() {
+        let items = names();
+        let mut a = ItemSession::new(&items, Some(11)).unwrap();
+        let mut got = a.draw(3).unwrap();
+        let state = a.save();
+
+        let mut shuffled = names();
+        shuffled.rotate_left(3);
+        shuffled.swap(0, 5);
+        let mut b = ItemSession::load(&state, &shuffled).unwrap();
+        let rest = b.draw(5).unwrap();
+        got.extend(a.draw(5).unwrap());
+        assert_eq!(ids_of(&got[3..]), ids_of(&rest));
+        // 復元側の index は、渡し直した配列の中の位置
+        for p in &rest {
+            assert_eq!(candidate_ids(&shuffled)[p.index as usize], p.id);
+        }
+        assert_eq!(ids_of(&got), ids_of(&draw_items(&items, 8, Some(11)).unwrap()));
+    }
+
+    #[test]
+    fn load_rejects_different_candidates_and_tampering() {
+        let items = names();
+        let mut s = ItemSession::new(&items, Some(1)).unwrap();
+        s.draw(2).unwrap();
+        let state = s.save();
+
+        let mut fewer = names();
+        fewer.pop();
+        let mut replaced = names();
+        replaced[0] = b"mallory";
+        for other in [&fewer, &replaced] {
+            let e = ItemSession::load(&state, other).err().unwrap();
+            assert!(e.0.contains("do not match"), "{}", e.0);
+        }
+
+        let good: Value = serde_json::from_str(&state).unwrap();
+        let mutate = |f: &dyn Fn(&mut Value)| {
+            let mut v = good.clone();
+            f(&mut v);
+            ItemSession::load(&v.to_string(), &items).is_err()
+        };
+        assert!(ItemSession::load(&state, &items).is_ok());
+        assert!(mutate(&|v| v["kind"] = json!("numbers")));
+        assert!(mutate(&|v| v["version"] = json!(2)));
+        assert!(mutate(&|v| v["fingerprint"] = json!("zz")));
+        assert!(mutate(&|v| v["drawn"] = json!([])));
+        assert!(mutate(&|v| v["session"]["n"] = json!(3)));
+        assert!(ItemSession::load("not json", &items).is_err());
+        // 数値セッションの状態は別物として拒否する
+        assert!(ItemSession::load(&Session::new(8, None).save(), &items).is_err());
+    }
+
+    #[test]
+    fn roughly_uniform_over_items() {
+        let items: Vec<&[u8]> = vec![b"a", b"b", b"c", b"d", b"e"];
+        let mut hits = HashMap::new();
+        for seed in 0..10_000u64 {
+            let p = draw_items(&items, 1, Some(seed)).unwrap();
+            *hits.entry(p[0].index).or_insert(0u32) += 1;
+        }
+        assert!(hits.values().all(|&h| (1700..2300).contains(&h)), "{hits:?}");
+    }
+
+    #[test]
+    fn c_abi_roundtrip() {
+        let items = names();
+        let data: Vec<u8> = items.concat();
+        let lens: Vec<usize> = items.iter().map(|i| i.len()).collect();
+        unsafe {
+            let mut ids = vec![0u8; 32 * items.len()];
+            assert_eq!(sortition_item_ids(data.as_ptr(), lens.as_ptr(), lens.len(), ids.as_mut_ptr()), SORTITION_OK);
+            let expected: Vec<u8> = candidate_ids(&items).concat();
+            assert_eq!(ids, expected);
+
+            let mut fp = [0u8; 32];
+            assert_eq!(sortition_item_fingerprint(data.as_ptr(), lens.as_ptr(), lens.len(), fp.as_mut_ptr()), SORTITION_OK);
+            assert_eq!(fp, set_fingerprint(&candidate_ids(&items)));
+
+            let seed = 4u64;
+            let (mut idx, mut out_ids) = ([0u32; 5], [0u8; 5 * 32]);
+            assert_eq!(
+                sortition_items_draw(data.as_ptr(), lens.as_ptr(), lens.len(), 5, &seed, idx.as_mut_ptr(), out_ids.as_mut_ptr()),
+                SORTITION_OK
+            );
+            let want = draw_items(&items, 5, Some(4)).unwrap();
+            assert_eq!(idx.to_vec(), want.iter().map(|p| p.index).collect::<Vec<_>>());
+            assert_eq!(out_ids.to_vec(), want.iter().flat_map(|p| p.id).collect::<Vec<_>>());
+
+            // セッション: 3 個引いて保存、復元して残りを引く
+            let mut s: *mut ItemSession = std::ptr::null_mut();
+            assert_eq!(sortition_item_session_new(data.as_ptr(), lens.as_ptr(), lens.len(), &seed, &mut s), SORTITION_OK);
+            let mut first = [0u32; 3];
+            assert_eq!(sortition_item_session_draw(s, 3, first.as_mut_ptr(), std::ptr::null_mut()), SORTITION_OK);
+            assert_eq!(sortition_item_session_remaining(s), 5);
+            assert_eq!(sortition_item_session_drawn_count(s), 3);
+            let mut json: *mut c_char = std::ptr::null_mut();
+            assert_eq!(sortition_item_session_save(s, &mut json), SORTITION_OK);
+            let state = std::ffi::CStr::from_ptr(json).to_bytes().to_vec();
+            crate::sortition_free(json);
+            sortition_item_session_free(s);
+
+            let mut t: *mut ItemSession = std::ptr::null_mut();
+            assert_eq!(
+                sortition_item_session_load(state.as_ptr(), state.len(), data.as_ptr(), lens.as_ptr(), lens.len(), &mut t),
+                SORTITION_OK
+            );
+            let mut rest = [0u32; 5];
+            assert_eq!(sortition_item_session_draw(t, 5, rest.as_mut_ptr(), std::ptr::null_mut()), SORTITION_OK);
+            assert_eq!(sortition_item_session_draw(t, 1, rest.as_mut_ptr(), std::ptr::null_mut()), SORTITION_ERR_INVALID);
+            let all: Vec<u32> = first.iter().chain(rest.iter()).copied().collect();
+            assert_eq!(all, draw_items(&items, 8, Some(4)).unwrap().iter().map(|p| p.index).collect::<Vec<_>>());
+            sortition_item_session_free(t);
+
+            // 候補が違えば ERR_STATE、NULL ポインタは INVALID
+            let other: Vec<u8> = b"x".to_vec();
+            let one = [1usize];
+            let mut bad: *mut ItemSession = std::ptr::null_mut();
+            assert_eq!(
+                sortition_item_session_load(state.as_ptr(), state.len(), other.as_ptr(), one.as_ptr(), 1, &mut bad),
+                SORTITION_ERR_STATE
+            );
+            assert!(bad.is_null());
+            assert_eq!(sortition_item_ids(std::ptr::null(), lens.as_ptr(), lens.len(), ids.as_mut_ptr()), SORTITION_ERR_INVALID);
+            sortition_item_session_free(std::ptr::null_mut());
+        }
+    }
+}

@@ -9,7 +9,9 @@ use std::ffi::{c_char, CStr, CString};
 
 mod data;
 mod host;
+mod items;
 mod session;
+pub use items::{candidate_ids, set_fingerprint, Id, ItemSession, Pick};
 pub use session::{Session, StateError};
 pub use data::{
     draw_data, DataError, SORTITION_FORMAT_JSON, SORTITION_FORMAT_TOML, SORTITION_FORMAT_YAML,

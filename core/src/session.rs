@@ -52,6 +52,11 @@ impl Session {
         Self { n, src, drawn: Vec::new(), swapped: HashMap::new() }
     }
 
+    /// 母集団の大きさ `n`
+    pub fn population(&self) -> u32 {
+        self.n
+    }
+
     /// まだ引いていない数
     pub fn remaining(&self) -> u32 {
         self.n - self.drawn.len() as u32
