@@ -5,7 +5,7 @@ import json
 import os
 import sys
 
-__all__ = ["draw", "draw_text", "draw_data", "version", "Session",
+__all__ = ["draw", "draw_text", "draw_data", "version", "Session", "seal_key_id",
            "Pick", "item_ids", "item_fingerprint", "draw_items", "ItemSession", "SortitionError"]
 
 _ERRORS = {
@@ -17,6 +17,7 @@ _ERRORS = {
     -6: "unsupported format",
     -7: "internal error",
     -8: "invalid session state",
+    -9: "idempotency key was already used with a different request",
 }
 
 _FORMATS = {"json": 0, "yaml": 1, "toml": 2}
@@ -119,6 +120,88 @@ _lib.sortition_item_session_load.restype = ctypes.c_int32
 _lib.sortition_item_session_free.argtypes = [_SESSION_P]
 _lib.sortition_item_session_free.restype = None
 
+_I32_P = ctypes.POINTER(ctypes.c_int32)
+_U32_P = ctypes.POINTER(ctypes.c_uint32)
+_lib.sortition_session_draw_keyed.argtypes = [_SESSION_P, ctypes.c_uint32, ctypes.c_char_p, _U32_P, _I32_P]
+_lib.sortition_session_draw_keyed.restype = ctypes.c_int32
+_lib.sortition_session_revision.argtypes = [_SESSION_P]
+_lib.sortition_session_revision.restype = ctypes.c_uint64
+_lib.sortition_session_id.argtypes = [_SESSION_P, ctypes.c_char_p]
+_lib.sortition_session_id.restype = ctypes.c_int32
+_lib.sortition_session_seal.argtypes = [
+    _SESSION_P, ctypes.c_char_p, ctypes.c_uint8, ctypes.POINTER(ctypes.c_void_p)]
+_lib.sortition_session_seal.restype = ctypes.c_int32
+_lib.sortition_session_unseal.argtypes = [
+    ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.POINTER(_SESSION_P)]
+_lib.sortition_session_unseal.restype = ctypes.c_int32
+_lib.sortition_item_session_draw_keyed.argtypes = [
+    _SESSION_P, ctypes.c_uint32, ctypes.c_char_p, _U32_P, ctypes.c_char_p, _I32_P]
+_lib.sortition_item_session_draw_keyed.restype = ctypes.c_int32
+_lib.sortition_item_session_revision.argtypes = [_SESSION_P]
+_lib.sortition_item_session_revision.restype = ctypes.c_uint64
+_lib.sortition_item_session_id.argtypes = [_SESSION_P, ctypes.c_char_p]
+_lib.sortition_item_session_id.restype = ctypes.c_int32
+_lib.sortition_item_session_seal.argtypes = [
+    _SESSION_P, ctypes.c_char_p, ctypes.c_uint8, ctypes.POINTER(ctypes.c_void_p)]
+_lib.sortition_item_session_seal.restype = ctypes.c_int32
+_lib.sortition_item_session_unseal.argtypes = [
+    ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_char_p, _SIZE_P,
+    ctypes.c_size_t, ctypes.POINTER(_SESSION_P)]
+_lib.sortition_item_session_unseal.restype = ctypes.c_int32
+_lib.sortition_seal_key_id.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint8)]
+_lib.sortition_seal_key_id.restype = ctypes.c_int32
+
+
+def _idem_key(key):
+    """羃等キー（str、1〜128 バイト）を C 文字列用のバイト列にする。None ならキーなし。"""
+    if key is None:
+        return None
+    if not isinstance(key, str):
+        raise TypeError("key must be a str or None")
+    data = key.encode("utf-8")
+    if b"\0" in data:
+        raise ValueError("key must not contain NUL")
+    return data
+
+
+def _secret(key):
+    """封をする鍵（ちょうど 32 バイトの bytes 系）。"""
+    if not isinstance(key, (bytes, bytearray, memoryview)) or len(key) != 32:
+        raise ValueError("key must be exactly 32 bytes")
+    return bytes(key)
+
+
+def _token(token):
+    return token.encode("utf-8") if isinstance(token, str) else bytes(token)
+
+
+def _detail(rc):
+    detail = _lib.sortition_last_error()
+    raise SortitionError(rc, detail.decode("utf-8", "replace") if detail else None)
+
+
+def _read_token(out):
+    try:
+        return ctypes.string_at(out.value).decode("ascii")
+    finally:
+        _lib.sortition_free(out)
+
+
+def _read_id(fn, handle):
+    buf = ctypes.create_string_buffer(33)
+    fn(handle, buf)
+    return buf.value.decode("ascii")
+
+
+def seal_key_id(token):
+    """封をしたトークンに記された鍵 ID（0〜255）。鍵を入れ替えている場合に、開く前に鍵を選ぶのに使う。"""
+    raw = _token(token)
+    out = ctypes.c_uint8()
+    rc = _lib.sortition_seal_key_id(raw, len(raw), ctypes.byref(out))
+    if rc != 0:
+        _detail(rc)
+    return out.value
+
 
 def draw(n, k, seed=None):
     """0..n-1 から k 個を重複なしで抽選して list で返す。seed 指定で再現可能。"""
@@ -204,13 +287,51 @@ class Session:
             raise ValueError("session is closed")
         return self._handle
 
-    def draw(self, k):
-        """続きから k 個引いて list で返す。残りを超えると SortitionError（状態は変わらない）。"""
-        out = (ctypes.c_uint32 * k)()
-        rc = _lib.sortition_session_draw(self._live(), k, out)
+    def draw(self, k, key=None):
+        """続きから k 個引いて list で返す。残りを超えると SortitionError（状態は変わらない）。
+
+        key（羃等キー、str、1〜128 バイト）を付けると、同じ key と同じ k の再送は、状態を変えずに
+        前回と同じ結果を返す。同じ key で別の k は SortitionError（code -9）。
+        """
+        out = (ctypes.c_uint32 * max(k, 1))()
+        rc = _lib.sortition_session_draw_keyed(self._live(), k, _idem_key(key), out, None)
         if rc != 0:
             raise SortitionError(rc)
-        return list(out)
+        return list(out)[:k]
+
+    @property
+    def revision(self):
+        """状態を変えた draw の回数。保存側が「読んだ revision のときだけ更新する」ために使える。"""
+        return _lib.sortition_session_revision(self._live())
+
+    @property
+    def id(self):
+        """セッションの識別子（小文字 16 進 32 文字）。作成時に OS から取った値。"""
+        return _read_id(_lib.sortition_session_id, self._live())
+
+    def seal(self, key, key_id=0):
+        """状態に封をしたトークン（str）を返す。乱数の内部状態を相手に見せずに預けられる。
+
+        key は 32 バイトの秘密鍵（os.urandom(32) など）。key_id は鍵の入れ替え用の目印（0〜255）。
+        信頼できない相手（ブラウザなど）に預けるときは、save() ではなくこちらを使う。
+        """
+        out = ctypes.c_void_p()
+        rc = _lib.sortition_session_seal(self._live(), _secret(key), key_id, ctypes.byref(out))
+        if rc != 0:
+            raise SortitionError(rc)
+        return _read_token(out)
+
+    @classmethod
+    def unseal(cls, token, key):
+        """seal() のトークンから復元する。形式の不正・鍵違い・改ざんは SortitionError（code -8）。"""
+        raw = _token(token)
+        handle = _SESSION_P()
+        rc = _lib.sortition_session_unseal(raw, len(raw), _secret(key), ctypes.byref(handle))
+        if rc != 0:
+            _detail(rc)
+        self = cls.__new__(cls)
+        self._handle = handle
+        return self
 
     @property
     def remaining(self):
@@ -347,14 +468,49 @@ class ItemSession:
             raise ValueError("session is closed")
         return self._handle
 
-    def draw(self, k):
-        """続きから k 個引いて list[Pick] で返す。残りを超えると SortitionError（状態は変わらない）。"""
+    def draw(self, k, key=None):
+        """続きから k 個引いて list[Pick] で返す。残りを超えると SortitionError（状態は変わらない）。
+
+        key（羃等キー、str、1〜128 バイト）を付けると、同じ key と同じ k の再送は、状態を変えずに
+        前回と同じ結果を返す。同じ key で別の k は SortitionError（code -9）。
+        """
         indexes = (ctypes.c_uint32 * max(k, 1))()
         ids = ctypes.create_string_buffer(max(32 * k, 1))
-        rc = _lib.sortition_item_session_draw(self._live(), k, indexes, ids)
+        rc = _lib.sortition_item_session_draw_keyed(self._live(), k, _idem_key(key), indexes, ids, None)
         if rc != 0:
             raise SortitionError(rc)
         return _picks(indexes, ids, k)
+
+    @property
+    def revision(self):
+        """状態を変えた draw の回数。"""
+        return _lib.sortition_item_session_revision(self._live())
+
+    @property
+    def id(self):
+        """セッションの識別子（小文字 16 進 32 文字）。"""
+        return _read_id(_lib.sortition_item_session_id, self._live())
+
+    def seal(self, key, key_id=0):
+        """状態に封をしたトークン（str）を返す。引数と注意は Session.seal と同じ。"""
+        out = ctypes.c_void_p()
+        rc = _lib.sortition_item_session_seal(self._live(), _secret(key), key_id, ctypes.byref(out))
+        if rc != 0:
+            raise SortitionError(rc)
+        return _read_token(out)
+
+    @classmethod
+    def unseal(cls, token, key, items):
+        """seal() のトークンと、同じ候補集合（並びは違ってよい）から復元する。"""
+        raw = _token(token)
+        data, lens, n = _pack(items)
+        handle = _SESSION_P()
+        rc = _lib.sortition_item_session_unseal(raw, len(raw), _secret(key), data, lens, n, ctypes.byref(handle))
+        if rc != 0:
+            _detail(rc)
+        self = cls.__new__(cls)
+        self._handle = handle
+        return self
 
     @property
     def remaining(self):
