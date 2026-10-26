@@ -21,11 +21,13 @@
 # define SORTITION_VALUE_ERROR zend_ce_value_error
 # define SORTITION_PARSE_START(min, max) ZEND_PARSE_PARAMETERS_START(min, max)
 # define SORTITION_PARAM_LONG_OR_NULL(dest, is_null) Z_PARAM_LONG_OR_NULL(dest, is_null)
+# define SORTITION_PARAM_STRING_OR_NULL(dest, len) Z_PARAM_STRING_OR_NULL(dest, len)
 typedef bool sortition_bool;
 #else
 # define SORTITION_VALUE_ERROR spl_ce_InvalidArgumentException
 # define SORTITION_PARSE_START(min, max) ZEND_PARSE_PARAMETERS_START_EX(ZEND_PARSE_PARAMS_THROW, min, max)
 # define SORTITION_PARAM_LONG_OR_NULL(dest, is_null) Z_PARAM_LONG_EX(dest, is_null, 1, 0)
+# define SORTITION_PARAM_STRING_OR_NULL(dest, len) Z_PARAM_STRING_EX(dest, len, 1, 0)
 # define RETURN_THROWS() return
 typedef zend_bool sortition_bool;
 #endif
@@ -274,12 +276,46 @@ static void sortition_session_free_obj(zend_object *obj)
 }
 
 /* コアのエラーコードを例外にする。値の誤りは ValueError 系、内部・乱数の失敗は Exception */
+static const char *sortition_default_message(int32_t rc)
+{
+	switch (rc) {
+	case SORTITION_ERR_INVALID: return "invalid argument (k exceeds the remaining count, or the key is invalid)";
+	case SORTITION_ERR_UTF8: return "text is not valid UTF-8";
+	case SORTITION_ERR_STATE: return "invalid session state";
+	case SORTITION_ERR_CONFLICT: return "idempotency key was already used with a different request";
+	default: return "failed";
+	}
+}
+
 static void sortition_throw(int32_t rc, const char *cls, const char *what, const char *detail)
 {
 	zend_class_entry *ce = (rc == SORTITION_ERR_INTERNAL || rc == SORTITION_ERR_RNG)
 		? zend_ce_exception : SORTITION_VALUE_ERROR;
 	zend_throw_exception_ex(ce, (zend_long) rc, "%s::%s(): %s", cls, what,
-		(detail && *detail) ? detail : "failed");
+		(detail && *detail) ? detail : sortition_default_message(rc));
+}
+
+/* 羃等キー（NULL ならキーなし）と、封をする鍵（ちょうど 32 バイト）・鍵 ID の検査。違反なら例外を投げて FAILURE */
+static int sortition_check_key(const char *key, size_t key_len, const char *where)
+{
+	if (key && memchr(key, '\0', key_len) != NULL) {
+		zend_throw_exception_ex(SORTITION_VALUE_ERROR, 0, "%s: key must not contain NUL bytes", where);
+		return FAILURE;
+	}
+	return SUCCESS;
+}
+
+static int sortition_check_secret(size_t secret_len, zend_long key_id, const char *where)
+{
+	if (secret_len != 32) {
+		zend_throw_exception_ex(SORTITION_VALUE_ERROR, 0, "%s: key must be exactly 32 bytes", where);
+		return FAILURE;
+	}
+	if (key_id < 0 || key_id > 255) {
+		zend_throw_exception_ex(SORTITION_VALUE_ERROR, 0, "%s: keyId must be in 0..255", where);
+		return FAILURE;
+	}
+	return SUCCESS;
 }
 
 /* 関数（クラスのメソッドでないもの）用 */
@@ -311,6 +347,27 @@ ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_session_draw, 0, 0, 1)
 	ZEND_ARG_INFO(0, k)
+	ZEND_ARG_INFO(0, key)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_session_seal, 0, 0, 1)
+	ZEND_ARG_INFO(0, key)
+	ZEND_ARG_INFO(0, keyId)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_session_unseal, 0, 0, 2)
+	ZEND_ARG_INFO(0, token)
+	ZEND_ARG_INFO(0, key)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_item_session_unseal, 0, 0, 3)
+	ZEND_ARG_INFO(0, token)
+	ZEND_ARG_INFO(0, key)
+	ZEND_ARG_INFO(0, items)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sortition_seal_key_id, 0, 0, 1)
+	ZEND_ARG_INFO(0, token)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_session_noargs, 0, 0, 0)
@@ -368,31 +425,41 @@ ZEND_METHOD(SortitionSession, load)
 	Z_SESSION_P(return_value)->s = s;
 }
 
+/* 続きから k 個引く。$key（羃等キー、1〜128 バイト）を付けると、同じ key と同じ k の再送は、
+ * 状態を変えずに前回と同じ結果を返す。同じ key で別の k は ValueError（code -9） */
 ZEND_METHOD(SortitionSession, draw)
 {
 	zend_long k;
+	char *key = NULL;
+	size_t key_len = 0;
 	sortition_session *s;
 	uint32_t *buf;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 1)
+	SORTITION_PARSE_START(1, 2)
 		Z_PARAM_LONG(k)
+		Z_PARAM_OPTIONAL
+		SORTITION_PARAM_STRING_OR_NULL(key, key_len)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (k < 0 || k > UINT32_MAX) {
 		SORTITION_THROW_VALUE("SortitionSession::draw(): require 0 <= k <= 4294967295");
 		RETURN_THROWS();
 	}
+	if (sortition_check_key(key, key_len, "SortitionSession::draw()") != SUCCESS) {
+		RETURN_THROWS();
+	}
 	if (!(s = sortition_session_open(ZEND_THIS, "SortitionSession", "draw"))) {
 		RETURN_THROWS();
 	}
-	if ((uint64_t) k > sortition_session_remaining(s)) {
+	/* キー付きの再送は、全部引いたあとでも前回の結果を返すので、事前の検査はキーなしのときだけ */
+	if (!key && (uint64_t) k > sortition_session_remaining(s)) {
 		SORTITION_THROW_VALUE("SortitionSession::draw(): k exceeds the remaining count");
 		RETURN_THROWS();
 	}
 
 	buf = safe_emalloc((size_t) (k ? k : 1), sizeof(uint32_t), 0);
-	rc = sortition_session_draw(s, (uint32_t) k, buf);
+	rc = sortition_session_draw_keyed(s, (uint32_t) k, key, buf, NULL);
 	if (rc != SORTITION_OK) {
 		efree(buf);
 		sortition_throw(rc, "SortitionSession", "draw", NULL);
@@ -403,6 +470,86 @@ ZEND_METHOD(SortitionSession, draw)
 		add_next_index_long(return_value, (zend_long) buf[i]);
 	}
 	efree(buf);
+}
+
+/* 状態を変えた draw の回数。保存側が「読んだ revision のときだけ更新する」ために使える */
+ZEND_METHOD(SortitionSession, revision)
+{
+	sortition_session *s;
+	ZEND_PARSE_PARAMETERS_NONE();
+	if (!(s = sortition_session_open(ZEND_THIS, "SortitionSession", "revision"))) {
+		RETURN_THROWS();
+	}
+	RETURN_LONG((zend_long) sortition_session_revision(s));
+}
+
+/* セッションの識別子（小文字 16 進 32 文字） */
+ZEND_METHOD(SortitionSession, id)
+{
+	sortition_session *s;
+	uint8_t buf[33];
+	ZEND_PARSE_PARAMETERS_NONE();
+	if (!(s = sortition_session_open(ZEND_THIS, "SortitionSession", "id"))) {
+		RETURN_THROWS();
+	}
+	sortition_session_id(s, buf);
+	RETURN_STRINGL((const char *) buf, 32);
+}
+
+/* 状態に封をしたトークンを返す。$key は 32 バイトの秘密鍵、$keyId は鍵の入れ替え用の目印（0〜255） */
+ZEND_METHOD(SortitionSession, seal)
+{
+	char *key;
+	size_t key_len;
+	zend_long key_id = 0;
+	sortition_session *s;
+	char *token = NULL;
+	int32_t rc;
+
+	SORTITION_PARSE_START(1, 2)
+		Z_PARAM_STRING(key, key_len)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(key_id)
+	ZEND_PARSE_PARAMETERS_END();
+
+	if (sortition_check_secret(key_len, key_id, "SortitionSession::seal()") != SUCCESS) {
+		RETURN_THROWS();
+	}
+	if (!(s = sortition_session_open(ZEND_THIS, "SortitionSession", "seal"))) {
+		RETURN_THROWS();
+	}
+	rc = sortition_session_seal(s, (const uint8_t *) key, (uint8_t) key_id, &token);
+	if (rc != SORTITION_OK) {
+		sortition_throw(rc, "SortitionSession", "seal", sortition_last_error());
+		RETURN_THROWS();
+	}
+	RETVAL_STRING(token);
+	sortition_free(token);
+}
+
+/* seal() のトークンから復元する。形式の不正・鍵違い・改ざんは ValueError（code -8） */
+ZEND_METHOD(SortitionSession, unseal)
+{
+	char *token, *key;
+	size_t token_len, key_len;
+	sortition_session *s = NULL;
+	int32_t rc;
+
+	SORTITION_PARSE_START(2, 2)
+		Z_PARAM_STRING(token, token_len)
+		Z_PARAM_STRING(key, key_len)
+	ZEND_PARSE_PARAMETERS_END();
+
+	if (sortition_check_secret(key_len, 0, "SortitionSession::unseal()") != SUCCESS) {
+		RETURN_THROWS();
+	}
+	rc = sortition_session_unseal((const uint8_t *) token, token_len, (const uint8_t *) key, &s);
+	if (rc != SORTITION_OK) {
+		sortition_throw(rc, "SortitionSession", "unseal", sortition_last_error());
+		RETURN_THROWS();
+	}
+	object_init_ex(return_value, sortition_session_ce);
+	Z_SESSION_P(return_value)->s = s;
 }
 
 ZEND_METHOD(SortitionSession, remaining)
@@ -456,6 +603,10 @@ static const zend_function_entry sortition_session_methods[] = {
 	ZEND_ME(SortitionSession, __construct, arginfo_session_construct, ZEND_ACC_PUBLIC)
 	ZEND_ME(SortitionSession, load, arginfo_session_load, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
 	ZEND_ME(SortitionSession, draw, arginfo_session_draw, ZEND_ACC_PUBLIC)
+	ZEND_ME(SortitionSession, revision, arginfo_session_noargs, ZEND_ACC_PUBLIC)
+	ZEND_ME(SortitionSession, id, arginfo_session_noargs, ZEND_ACC_PUBLIC)
+	ZEND_ME(SortitionSession, seal, arginfo_session_seal, ZEND_ACC_PUBLIC)
+	ZEND_ME(SortitionSession, unseal, arginfo_session_unseal, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
 	ZEND_ME(SortitionSession, remaining, arginfo_session_noargs, ZEND_ACC_PUBLIC)
 	ZEND_ME(SortitionSession, drawnCount, arginfo_session_noargs, ZEND_ACC_PUBLIC)
 	ZEND_ME(SortitionSession, save, arginfo_session_noargs, ZEND_ACC_PUBLIC)
@@ -733,33 +884,41 @@ ZEND_METHOD(SortitionItemSession, load)
 	Z_SESSION_P(return_value)->s = s;
 }
 
-/* 続きから k 個引く。[['index' => 位置, 'id' => ID], ...]。残りを超えると ValueError（状態は変わらない） */
+/* 続きから k 個引く。[['index' => 位置, 'id' => ID], ...]。残りを超えると ValueError（状態は変わらない）。
+ * $key（羃等キー）の扱いは SortitionSession::draw と同じ */
 ZEND_METHOD(SortitionItemSession, draw)
 {
 	zend_long k;
+	char *key = NULL;
+	size_t key_len = 0;
 	sortition_item_session *s;
 	uint32_t *indexes;
 	uint8_t *ids;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 1)
+	SORTITION_PARSE_START(1, 2)
 		Z_PARAM_LONG(k)
+		Z_PARAM_OPTIONAL
+		SORTITION_PARAM_STRING_OR_NULL(key, key_len)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (k < 0 || k > UINT32_MAX) {
 		SORTITION_THROW_VALUE("SortitionItemSession::draw(): require 0 <= k <= 4294967295");
 		RETURN_THROWS();
 	}
+	if (sortition_check_key(key, key_len, "SortitionItemSession::draw()") != SUCCESS) {
+		RETURN_THROWS();
+	}
 	if (!(s = sortition_session_open(ZEND_THIS, "SortitionItemSession", "draw"))) {
 		RETURN_THROWS();
 	}
-	if ((uint64_t) k > sortition_item_session_remaining(s)) {
+	if (!key && (uint64_t) k > sortition_item_session_remaining(s)) {
 		SORTITION_THROW_VALUE("SortitionItemSession::draw(): k exceeds the remaining count");
 		RETURN_THROWS();
 	}
 	indexes = safe_emalloc((size_t) (k ? k : 1), sizeof(uint32_t), 0);
 	ids = safe_emalloc((size_t) k, 32, 1);
-	rc = sortition_item_session_draw(s, (uint32_t) k, indexes, ids);
+	rc = sortition_item_session_draw_keyed(s, (uint32_t) k, key, indexes, ids, NULL);
 	if (rc != SORTITION_OK) {
 		efree(indexes);
 		efree(ids);
@@ -769,6 +928,92 @@ ZEND_METHOD(SortitionItemSession, draw)
 	sortition_picks_to_array(return_value, indexes, ids, (uint32_t) k);
 	efree(indexes);
 	efree(ids);
+}
+
+ZEND_METHOD(SortitionItemSession, revision)
+{
+	sortition_item_session *s;
+	ZEND_PARSE_PARAMETERS_NONE();
+	if (!(s = sortition_session_open(ZEND_THIS, "SortitionItemSession", "revision"))) {
+		RETURN_THROWS();
+	}
+	RETURN_LONG((zend_long) sortition_item_session_revision(s));
+}
+
+ZEND_METHOD(SortitionItemSession, id)
+{
+	sortition_item_session *s;
+	uint8_t buf[33];
+	ZEND_PARSE_PARAMETERS_NONE();
+	if (!(s = sortition_session_open(ZEND_THIS, "SortitionItemSession", "id"))) {
+		RETURN_THROWS();
+	}
+	sortition_item_session_id(s, buf);
+	RETURN_STRINGL((const char *) buf, 32);
+}
+
+/* 状態に封をしたトークンを返す。引数は SortitionSession::seal と同じ */
+ZEND_METHOD(SortitionItemSession, seal)
+{
+	char *key;
+	size_t key_len;
+	zend_long key_id = 0;
+	sortition_item_session *s;
+	char *token = NULL;
+	int32_t rc;
+
+	SORTITION_PARSE_START(1, 2)
+		Z_PARAM_STRING(key, key_len)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(key_id)
+	ZEND_PARSE_PARAMETERS_END();
+
+	if (sortition_check_secret(key_len, key_id, "SortitionItemSession::seal()") != SUCCESS) {
+		RETURN_THROWS();
+	}
+	if (!(s = sortition_session_open(ZEND_THIS, "SortitionItemSession", "seal"))) {
+		RETURN_THROWS();
+	}
+	rc = sortition_item_session_seal(s, (const uint8_t *) key, (uint8_t) key_id, &token);
+	if (rc != SORTITION_OK) {
+		sortition_throw(rc, "SortitionItemSession", "seal", sortition_last_error());
+		RETURN_THROWS();
+	}
+	RETVAL_STRING(token);
+	sortition_free(token);
+}
+
+/* seal() のトークンと、同じ候補集合（並びは違ってよい）から復元する。違えば ValueError（code -8） */
+ZEND_METHOD(SortitionItemSession, unseal)
+{
+	char *token, *key;
+	size_t token_len, key_len;
+	HashTable *items;
+	sortition_items_buf b;
+	sortition_item_session *s = NULL;
+	int32_t rc;
+
+	SORTITION_PARSE_START(3, 3)
+		Z_PARAM_STRING(token, token_len)
+		Z_PARAM_STRING(key, key_len)
+		Z_PARAM_ARRAY_HT(items)
+	ZEND_PARSE_PARAMETERS_END();
+
+	if (sortition_check_secret(key_len, 0, "SortitionItemSession::unseal()") != SUCCESS) {
+		RETURN_THROWS();
+	}
+	if (sortition_items_pack(items, "SortitionItemSession::unseal()", &b) != SUCCESS) {
+		RETURN_THROWS();
+	}
+	rc = sortition_item_session_unseal((const uint8_t *) token, token_len, (const uint8_t *) key,
+		b.data, b.lens, b.count, &s);
+	sortition_items_buf_free(&b);
+	if (rc != SORTITION_OK) {
+		sortition_throw(rc, "SortitionItemSession", "unseal", sortition_last_error());
+		RETURN_THROWS();
+	}
+	object_init_ex(return_value, sortition_item_session_ce);
+	Z_SESSION_P(return_value)->s = s;
 }
 
 ZEND_METHOD(SortitionItemSession, remaining)
@@ -821,6 +1066,10 @@ static const zend_function_entry sortition_item_session_methods[] = {
 	ZEND_ME(SortitionItemSession, __construct, arginfo_item_session_construct, ZEND_ACC_PUBLIC)
 	ZEND_ME(SortitionItemSession, load, arginfo_item_session_load, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
 	ZEND_ME(SortitionItemSession, draw, arginfo_session_draw, ZEND_ACC_PUBLIC)
+	ZEND_ME(SortitionItemSession, revision, arginfo_session_noargs, ZEND_ACC_PUBLIC)
+	ZEND_ME(SortitionItemSession, id, arginfo_session_noargs, ZEND_ACC_PUBLIC)
+	ZEND_ME(SortitionItemSession, seal, arginfo_session_seal, ZEND_ACC_PUBLIC)
+	ZEND_ME(SortitionItemSession, unseal, arginfo_item_session_unseal, ZEND_ACC_PUBLIC | ZEND_ACC_STATIC)
 	ZEND_ME(SortitionItemSession, remaining, arginfo_session_noargs, ZEND_ACC_PUBLIC)
 	ZEND_ME(SortitionItemSession, drawnCount, arginfo_session_noargs, ZEND_ACC_PUBLIC)
 	ZEND_ME(SortitionItemSession, save, arginfo_session_noargs, ZEND_ACC_PUBLIC)
@@ -848,6 +1097,27 @@ PHP_MINIT_FUNCTION(sortition)
 	return SUCCESS;
 }
 
+/* トークンに記された鍵 ID（0〜255）。鍵を入れ替えている場合に、開く前に鍵を選ぶのに使う */
+PHP_FUNCTION(sortition_seal_key_id)
+{
+	char *token;
+	size_t token_len;
+	uint8_t id = 0;
+	int32_t rc;
+
+	SORTITION_PARSE_START(1, 1)
+		Z_PARAM_STRING(token, token_len)
+	ZEND_PARSE_PARAMETERS_END();
+
+	rc = sortition_seal_key_id((const uint8_t *) token, token_len, &id);
+	if (rc != SORTITION_OK) {
+		zend_throw_exception_ex(SORTITION_VALUE_ERROR, (zend_long) rc, "sortition_seal_key_id(): %s",
+			sortition_last_error());
+		RETURN_THROWS();
+	}
+	RETURN_LONG((zend_long) id);
+}
+
 PHP_FUNCTION(sortition_version)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
@@ -861,6 +1131,7 @@ static const zend_function_entry sortition_functions[] = {
 	PHP_FE(sortition_item_ids, arginfo_sortition_item_ids)
 	PHP_FE(sortition_item_fingerprint, arginfo_sortition_item_ids)
 	PHP_FE(sortition_draw_items, arginfo_sortition_draw_items)
+	PHP_FE(sortition_seal_key_id, arginfo_sortition_seal_key_id)
 	PHP_FE(sortition_version, arginfo_sortition_version)
 	PHP_FE_END
 };
