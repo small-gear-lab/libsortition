@@ -5,7 +5,8 @@ import json
 import os
 import sys
 
-__all__ = ["draw", "draw_text", "draw_data", "version", "Session", "seal_key_id",
+__all__ = ["draw", "draw_text", "draw_data", "version", "Session", "seal_key_id", "seed_from_text", "seed_commit",
+           "Stage", "StageResult", "draw_stages",
            "Pick", "item_ids", "item_fingerprint", "draw_items", "ItemSession", "SortitionError"]
 
 _ERRORS = {
@@ -148,6 +149,9 @@ _lib.sortition_item_session_unseal.argtypes = [
     ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_char_p, _SIZE_P,
     ctypes.c_size_t, ctypes.POINTER(_SESSION_P)]
 _lib.sortition_item_session_unseal.restype = ctypes.c_int32
+_lib.sortition_seed_from_text.argtypes = [
+    ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint64), ctypes.c_char_p]
+_lib.sortition_seed_from_text.restype = ctypes.c_int32
 _lib.sortition_seal_key_id.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint8)]
 _lib.sortition_seal_key_id.restype = ctypes.c_int32
 
@@ -430,6 +434,71 @@ def draw_items(items, k, seed=None):
     if rc != 0:
         raise SortitionError(rc)
     return _picks(indexes, ids, k)
+
+
+def _seed_info(text):
+    """seed の文字列から (seed, SHA-256 のダイジェスト) をコアの規則で決める。"""
+    data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+    seed = ctypes.c_uint64()
+    digest = ctypes.create_string_buffer(32)
+    rc = _lib.sortition_seed_from_text(data, len(data), ctypes.byref(seed), digest)
+    if rc != 0:
+        raise SortitionError(rc)
+    return seed.value, digest.raw
+
+
+def seed_from_text(text):
+    """seed の文字列（str は UTF-8、bytes 系はそのまま）から seed（0 以上の int）を決める。
+
+    seed は、文字列の SHA-256 の先頭 8 バイトをリトルエンディアンで読んだ値。
+    抽選の前にコミット値（seed_commit）だけを公開しておき、直前に文字列を明かすと、
+    あとから seed を選び直していないことを示せる。
+    """
+    return _seed_info(text)[0]
+
+
+def seed_commit(text):
+    """seed の文字列の SHA-256（小文字 16 進 64 文字）。抽選の前に公開するコミット値。"""
+    return _seed_info(text)[1].hex()
+
+
+Stage = collections.namedtuple("Stage", ["name", "count"])
+Stage.__doc__ = "賞の計画の 1 件（名前と人数）。"
+StageResult = collections.namedtuple("StageResult", ["name", "count", "winners"])
+StageResult.__doc__ = "賞ごとの結果。winners は Pick の list。"
+
+
+def _stage(spec, i):
+    if isinstance(spec, dict):
+        name, count = spec.get("name"), spec.get("count")
+    else:
+        try:
+            name, count = spec
+        except (TypeError, ValueError):
+            raise TypeError(f"stages[{i}] must be a Stage, a (name, count) pair or a dict") from None
+    if not isinstance(name, str):
+        raise TypeError(f"stages[{i}] name must be a str")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError(f"stages[{i}] count must be a non-negative int")
+    return Stage(name, count)
+
+
+def draw_stages(items, stages, seed=None):
+    """賞ごとに順番に抽選する（重複当選なし）。list[StageResult] を返す。
+
+    items は候補（bytes 系 / str）。stages は引く順の賞で、Stage、(名前, 人数) の組、
+    {"name": ..., "count": ...} のどれでもよい。合計人数を draw_items で一度に引いて、先頭から
+    賞ごとに切り分ける（「1 つ目の賞を引き、残りから次の賞を引く」と同じ確率）。
+    候補は ID の昇順に並べてから引くので、同じ候補集合とシードなら、items の並びが違っても
+    同じ候補が当選する。合計人数が候補数を超えれば SortitionError。
+    """
+    plan = [_stage(spec, i) for i, spec in enumerate(stages)]
+    picks = draw_items(items, sum(st.count for st in plan), seed=seed)
+    results, at = [], 0
+    for st in plan:
+        results.append(StageResult(st.name, st.count, picks[at:at + st.count]))
+        at += st.count
+    return results
 
 
 class ItemSession:

@@ -110,6 +110,55 @@ class Session(unittest.TestCase):
                 a.seal(bad_key)
 
 
+class Seed(unittest.TestCase):
+    def test_seed_from_text_follows_the_core_rule(self):
+        # printf sortition | sha256sum の先頭 8 バイトをリトルエンディアンで読んだ値（全バインディング共通）
+        self.assertEqual(s.seed_from_text("sortition"), 131367258856992384)
+        self.assertEqual(s.seed_from_text(b"sortition"), 131367258856992384)
+        self.assertEqual(s.seed_commit("sortition"), "80ae496fd3b5d201bb96339356ff252e2b1cdc214ad567f6ebe8de4537e6b31c")
+        self.assertEqual(s.seed_from_text(""), 0x141cfc9842c4b0e3)
+        self.assertEqual(s.seed_from_text("日本語"), s.seed_from_text("日本語".encode("utf-8")))
+        self.assertNotEqual(s.seed_from_text("a"), s.seed_from_text("b"))
+        # 抽選の seed にそのまま渡せる
+        self.assertEqual(len(s.draw(10, 3, seed=s.seed_from_text("abc"))), 3)
+
+
+class Stages(unittest.TestCase):
+    PLAN = [("副賞", 3), ("大賞", 1)]
+
+    def test_stages_cut_one_draw_in_order(self):
+        seed = s.seed_from_text("stages")
+        got = s.draw_stages(NAMES, self.PLAN, seed=seed)
+        whole = s.draw_items(NAMES, 4, seed=seed)
+        self.assertEqual([(r.name, r.count, len(r.winners)) for r in got], [("副賞", 3, 3), ("大賞", 1, 1)])
+        self.assertEqual([p for r in got for p in r.winners], whole)
+        self.assertEqual(len({p.id for r in got for p in r.winners}), 4)  # 重複当選なし
+
+    def test_independent_of_the_order_of_items(self):
+        seed = s.seed_from_text("stages")
+        a = s.draw_stages(NAMES, self.PLAN, seed=seed)
+        b = s.draw_stages(list(reversed(NAMES)), self.PLAN, seed=seed)
+        self.assertEqual([[p.id for p in r.winners] for r in a], [[p.id for p in r.winners] for r in b])
+
+    def test_accepts_stage_pairs_and_dicts(self):
+        seed = 5
+        want = s.draw_stages(NAMES, self.PLAN, seed=seed)
+        self.assertEqual(s.draw_stages(NAMES, [s.Stage("副賞", 3), s.Stage("大賞", 1)], seed=seed), want)
+        self.assertEqual(s.draw_stages(NAMES, [{"name": "副賞", "count": 3}, {"name": "大賞", "count": 1}], seed=seed), want)
+        self.assertEqual(s.draw_stages(NAMES, []), [])
+        self.assertEqual(s.draw_stages(NAMES, [("空", 0)])[0].winners, [])
+
+    def test_errors(self):
+        with self.assertRaises(s.SortitionError):
+            s.draw_stages(NAMES, [("多すぎる", 99)])
+        for bad in ([("a", -1)], [("a", 1.5)], [("a", True)]):
+            with self.assertRaises(ValueError):
+                s.draw_stages(NAMES, bad)
+        for bad in ([(1, 1)], [("a",)], ["ab"], [{"count": 1}]):
+            with self.assertRaises((TypeError, ValueError)):
+                s.draw_stages(NAMES, bad)
+
+
 class Items(unittest.TestCase):
     def test_ids_and_fingerprint(self):
         self.assertEqual(s.item_ids([b"abc"]),
