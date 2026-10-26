@@ -20,5 +20,6 @@ bindings/php/configure*
 bindings/php/libtool
 bindings/php/run-tests.php
 bindings/php/.deps
+bindings/php/*.dep
 bindings/node/build/
 bindings/wasm/sortition.wasm
