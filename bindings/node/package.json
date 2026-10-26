@@ -9,7 +9,7 @@
     "build": "node-gyp rebuild",
     "test": "node --test test/*.test.js"
   },
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=22" },
   "devDependencies": { "node-gyp": "^11.0.0" },
   "license": "MIT OR Apache-2.0"
 }

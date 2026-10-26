@@ -78,6 +78,8 @@ Every folder has a `manifest.json` with the SHA-384 of its files. `gh-pages` is 
 
 **The seed rule and the draw order are shared by everything.** The seed of a string is the first 8 bytes of its SHA-256 as a little-endian u64 (`core/src/seed.rs`); staged draws take the total with `draw_items` and cut it up in order. The CLI test `draw_matches_the_library_and_other_bindings` pins the winners for one candidate list and seed, and Python, Ruby, Node.js, WebAssembly and PHP must give the same ones. The record written by `sortition draw` has a format name (`libsortition-draw-record/1`); change the number whenever its format changes. Publish `sortition` to crates.io before `sortition-cli` (the CLI's package cannot be built until the crate it depends on exists there).
 
+**Support the versions upstream supports, and no older ones.** The bindings target PHP 8.2+, Node.js 22+, Python 3.11+ and Ruby 3.3+ (CI runs the oldest and the newest of each), and Rust 1.85+ for the crates. When a version reaches its end of life (check <https://endoflife.date>), drop it from the CI matrix, the documented minimum and, for Node.js, `engines` in `bindings/node/package.json`. An update from Dependabot can force this: `node-gyp` 13 needs Node.js 22.22 or later.
+
 **Don't leak resources.** Sessions are freed by `close()` and, as a fallback, by finalizers (Ruby, Node.js, WASM) or object destructors (PHP, Python `__del__`). The WASM and PHP tests include memory-growth checks; keep them passing.
 
 ## Commits
