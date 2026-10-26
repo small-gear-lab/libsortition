@@ -179,6 +179,15 @@ int32_t sortition_item_session_load(const uint8_t *state, size_t state_len,
                                     sortition_item_session **out);
 void sortition_item_session_free(sortition_item_session *s); /* NULL は無視 */
 
+/* ---- seed の文字列 ----
+ * seed の文字列（のバイト列）の SHA-256 が「コミット値」で、seed は、そのダイジェストの先頭 8 バイトを
+ * リトルエンディアンで読んだ u64。抽選の前にコミット値だけを公開しておき、直前に文字列を明かすと、
+ * あとから seed を選び直していないことを示せる。 */
+
+/* text（len バイト。UTF-8 でなくてもよい）から seed を決めて *out_seed に書く。
+ * out_digest が NULL でなければ、SHA-256（コミット値）の 32 バイトも書く。 */
+int32_t sortition_seed_from_text(const uint8_t *text, size_t len, uint64_t *out_seed, uint8_t *out_digest);
+
 /* ホストが呼び出し用バッファを確保する（WASM のようにリニアメモリへ直接書き込む環境向け）。
  * sortition_dealloc には確保時と同じ len を渡す。 */
 uint8_t *sortition_alloc(size_t len);

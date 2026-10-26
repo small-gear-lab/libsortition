@@ -15,8 +15,10 @@ mod hex;
 mod host;
 mod items;
 mod seal;
+mod seed;
 mod session;
-pub use items::{candidate_ids, set_fingerprint, Id, ItemSession, Pick};
+pub use items::{candidate_ids, draw_items, set_fingerprint, Id, ItemSession, Pick};
+pub use seed::{seed_digest, seed_from_text};
 pub use seal::{open as open_sealed, seal as seal_state, token_key_id};
 pub use session::{Session, StateError};
 pub use data::{
