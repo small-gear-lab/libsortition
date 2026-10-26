@@ -57,16 +57,17 @@ cargo test -p sortition                  # core tests
 A release is a version tag; everything else follows from it. Steps, in order:
 
 1. **Bump the version everywhere:** `python3 .github/scripts/version.py bump X.Y.Z`, then `cargo check` (updates `Cargo.lock`) and `go generate` in `bindings/go` (the embedded WebAssembly carries the version). `version.py check` (also run by CI) fails when any place differs; it knows about the crates, the npm packages, the Dart, .NET and Java packages, the PHP header and the tests that pin the version. A new place that holds the version must be added to its list.
-2. **Release-only edits in the docs** (when this is the first stable release, or the `/latest/` link should change): the README demo link goes from `/next/` to `/latest/`, and the CLI install line becomes `cargo install sortition-cli`.
-3. Merge to `main`, wait for CI to pass, then run **Release** by hand ("Run workflow") as a dry run. It builds every asset from the branch and keeps them as workflow artifacts without making a release.
-4. Tag the commit (`git tag vX.Y.Z && git push origin vX.Y.Z`; the tag must equal the version, and the commit must be on `main` with a green CI). `.github/workflows/release.yml` builds the command and the shared library for Linux (x86-64, arm64), macOS (arm64, x86-64) and Windows (x86-64), the npm package and `sortition.wasm`, writes `SHA256SUMS`, attests every file and makes a **draft** GitHub Release.
-5. Read the draft, then press "Publish release". That starts `pages.yml`, which publishes `/vX.Y.Z/` (and `/latest/` for a stable version).
-6. Publish the packages by hand, in this order (they need accounts and 2FA, so they are not automated):
+2. **CHANGELOG:** rename "Unreleased" in `CHANGELOG.md` to `[X.Y.Z] - YYYY-MM-DD` and start a new empty "Unreleased" above it. Every user-visible change goes there as it is made (the pull request template reminds you), and a change that alters what a seed produces gets its own heading.
+3. **Release-only edits in the docs** (when this is the first stable release, or the `/latest/` link should change): the README demo link goes from `/next/` to `/latest/`, and the CLI install line becomes `cargo install sortition-cli`.
+4. Merge to `main`, wait for CI to pass, then run **Release** by hand ("Run workflow") as a dry run. It builds every asset from the branch and keeps them as workflow artifacts without making a release.
+5. Tag the commit (`git tag vX.Y.Z && git push origin vX.Y.Z`; the tag must equal the version, and the commit must be on `main` with a green CI). `.github/workflows/release.yml` builds the command and the shared library for Linux (x86-64, arm64), macOS (arm64, x86-64) and Windows (x86-64), the npm package and `sortition.wasm`, writes `SHA256SUMS`, attests every file and makes a **draft** GitHub Release.
+6. Read the draft, then press "Publish release". That starts `pages.yml`, which publishes `/vX.Y.Z/` (and `/latest/` for a stable version).
+7. Publish the packages by hand, in this order (they need accounts and 2FA, so they are not automated):
    - crates.io: `cargo publish -p sortition`, wait until it appears in the index, then `cargo publish -p sortition-cli`.
    - npm: `cd bindings/wasm && bindings/wasm/build.sh && npm publish` (see below).
    - NuGet: `dotnet pack -c Release bindings/dotnet/Sortition` and `dotnet nuget push` the `.nupkg` (the package has no native library; the user supplies `libsortition`).
    - Python, Ruby, PHP, Go, Java, Swift and Dart are used from source for now (no registry package yet).
-7. Never move or delete a published tag. A mistake gets a new patch version.
+8. Never move or delete a published tag. A mistake gets a new patch version.
 
 ## Publishing the WebAssembly build
 

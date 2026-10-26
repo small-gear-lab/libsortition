@@ -1,0 +1,47 @@
+name: Bug report
+description: Something gives a wrong result, crashes or does not build
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security problem (a bias in the draw, a forged or readable sealed token, a memory-safety bug), please do not use an issue: see [SECURITY.md](https://github.com/small-gear-lab/libsortition/blob/main/SECURITY.md).
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does it happen?
+      options:
+        - core / C API
+        - sortition command
+        - Node.js (native addon)
+        - WebAssembly (browser or Node.js)
+        - PHP
+        - Python
+        - Ruby
+        - .NET
+        - Go
+        - Java / Kotlin
+        - Swift
+        - Dart
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "0.1.0, or the commit of main"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform and language version
+      placeholder: "Ubuntu 24.04, Python 3.12"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: A small program or input that shows it is the most useful thing you can add. If a draw is involved, include the seed and the candidates.
+    validations:
+      required: true

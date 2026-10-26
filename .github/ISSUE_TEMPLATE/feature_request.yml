@@ -1,0 +1,16 @@
+name: Feature request
+description: Something you would like the library to do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What do you want to do?
+      description: Describe what you are trying to achieve, not only the API you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could it work?
+      description: Optional. Note that a change to the draw order, the seed rule or the saved formats changes results for existing seeds, so it needs a strong reason.
