@@ -6,11 +6,73 @@ import json
 import os
 import sys
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import sortition as s  # noqa: E402
 
 NAMES = [b"alice", "bob", b"carol", b"dave", b"erin", b"frank", b"grace", b"heidi"]
+
+# 全言語共通のテストベクトル（docs/SPEC.md、core のテストが作る）
+VECTORS = json.loads((Path(__file__).resolve().parents[3] / "test-vectors" / "vectors.json").read_text(encoding="utf-8"))
+
+
+class SharedVectors(unittest.TestCase):
+    """全言語共通のテストベクトル（test-vectors/vectors.json）と同じ値になること"""
+
+    @staticmethod
+    def items(v):
+        return [bytes.fromhex(h) for h in v["items_hex"]]
+
+    def sets(self):
+        return {v["name"]: self.items(v) for v in VECTORS["item_sets"]}
+
+    def test_seed_from_text(self):
+        for v in VECTORS["seed_from_text"]:
+            with self.subTest(text=v["text"]):
+                self.assertEqual(s.seed_from_text(v["text"]), int(v["seed"]))
+                self.assertEqual(s.seed_commit(v["text"]), v["digest"])
+
+    def test_draw(self):
+        for v in VECTORS["draw"]:
+            with self.subTest(n=v["n"], k=v["k"], seed=v["seed"]):
+                self.assertEqual(s.draw(v["n"], v["k"], seed=int(v["seed"])), v["result"])
+
+    def test_item_ids_and_fingerprints(self):
+        for v in VECTORS["item_sets"]:
+            with self.subTest(set=v["name"]):
+                self.assertEqual(s.item_ids(self.items(v)), v["ids"])
+                self.assertEqual(s.item_fingerprint(self.items(v)), v["fingerprint"])
+
+    def test_draw_items(self):
+        sets = self.sets()
+        for v in VECTORS["draw_items"]:
+            with self.subTest(set=v["set"], k=v["k"], seed=v["seed"]):
+                got = [{"index": p.index, "id": p.id} for p in s.draw_items(sets[v["set"]], v["k"], seed=int(v["seed"]))]
+                self.assertEqual(got, v["winners"])
+
+    def test_stages(self):
+        sets = self.sets()
+        for v in VECTORS["stages"]:
+            with self.subTest(set=v["set"]):
+                plan = [(st["name"], st["count"]) for st in v["stages"]]
+                got = [
+                    {"name": r.name, "count": r.count, "winners": [{"index": p.index, "id": p.id} for p in r.winners]}
+                    for r in s.draw_stages(sets[v["set"]], plan, seed=s.seed_from_text(v["seed_text"]))
+                ]
+                self.assertEqual(got, v["stages"])
+
+    def test_session_restored_from_a_chacha20_state(self):
+        v = VECTORS["chacha20_session"]
+        session = s.Session.load(json.dumps(v["state"]))
+        self.assertEqual([session.draw(k) for k in v["draws"]], v["expected"])
+
+    def test_sealed_token(self):
+        v = VECTORS["seal"]
+        key = bytes.fromhex(v["key"])
+        self.assertEqual(s.seal_key_id(v["token"]), v["key_id"])
+        session = s.Session.unseal(v["token"], key)
+        self.assertEqual([session.draw(k) for k in v["draws"]], v["expected"])
 
 
 class Basics(unittest.TestCase):

@@ -2,6 +2,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const s = require('..');
+const fs = require('node:fs');
+const path = require('node:path');
+
+// 全言語共通のテストベクトル（docs/SPEC.md、core のテストが作る）。64 ビットの値は 10 進文字列で入っている
+const V = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'test-vectors', 'vectors.json'), 'utf8'));
+const vectorItems = (v) => v.items_hex.map((h) => Buffer.from(h, 'hex'));
+const vectorSets = () => Object.fromEntries(V.item_sets.map((v) => [v.name, vectorItems(v)]));
 
 test('version', () => assert.equal(s.version(), '0.1.0'));
 
@@ -301,4 +308,34 @@ test('itemSession: 羃等キー・revision・id・seal', () => {
   assert.deepEqual(idsOf(again.draw(5)), idsOf(lot.draw(5)));
   assert.throws(() => s.unsealItemSession(token, key, names.slice(1)), (e) => e.code === -8);
   assert.throws(() => s.unsealSession(token, key), (e) => e.code === -8); // 数値のセッションとしては開けない
+});
+
+test('共通ベクトル: seed と draw', () => {
+  for (const v of V.seed_from_text) assert.equal(s.seedFromText(v.text), BigInt(v.seed), `seed of ${JSON.stringify(v.text)}`);
+  for (const v of V.draw) assert.deepEqual(s.draw(v.n, v.k, { seed: BigInt(v.seed) }), v.result, `draw ${v.n} ${v.k} ${v.seed}`);
+});
+
+test('共通ベクトル: 候補の ID・指紋・抽選・賞', () => {
+  const sets = vectorSets();
+  for (const v of V.item_sets) {
+    assert.deepEqual(s.itemIds(vectorItems(v)), v.ids, `ids of ${v.name}`);
+    assert.equal(s.itemFingerprint(vectorItems(v)), v.fingerprint);
+  }
+  for (const v of V.draw_items) {
+    assert.deepEqual(s.drawItems(sets[v.set], v.k, { seed: BigInt(v.seed) }), v.winners, `draw_items ${v.set} ${v.k} ${v.seed}`);
+  }
+  for (const v of V.stages) {
+    const plan = v.stages.map(({ name, count }) => ({ name, count }));
+    assert.deepEqual(s.drawStages(sets[v.set], plan, { seed: s.seedFromText(v.seed_text) }), v.stages, `stages of ${v.set}`);
+  }
+});
+
+test('共通ベクトル: ChaCha20 の状態のセッションと、封をしたトークン', () => {
+  let v = V.chacha20_session;
+  const session = s.loadSession(JSON.stringify(v.state));
+  assert.deepEqual(v.draws.map((k) => session.draw(k)), v.expected);
+  v = V.seal;
+  assert.equal(s.sealKeyId(v.token), v.key_id);
+  const sealed = s.unsealSession(v.token, Buffer.from(v.key, 'hex'));
+  assert.deepEqual(v.draws.map((k) => sealed.draw(k)), v.expected);
 });

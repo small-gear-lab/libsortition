@@ -5,9 +5,58 @@ require "minitest/autorun"
 require "securerandom"
 require "sortition"
 
+# 全言語共通のテストベクトル（docs/SPEC.md、core のテストが作る）
+VECTORS = JSON.parse(File.read(File.expand_path("../../../test-vectors/vectors.json", __dir__)))
+
 class SortitionTest < Minitest::Test
   S = Sortition
   NAMES = %w[alice bob carol dave erin frank grace heidi].freeze
+
+  def vector_items(v) = v["items_hex"].map { |h| [h].pack("H*") }
+
+  def vector_sets = VECTORS["item_sets"].to_h { |v| [v["name"], vector_items(v)] }
+
+  def winners(picks) = picks.map { |p| { "index" => p.index, "id" => p.id } }
+
+  def test_shared_vectors_seed_and_draw
+    VECTORS["seed_from_text"].each do |v|
+      assert_equal v["seed"].to_i, S.seed_from_text(v["text"]), "seed of #{v['text'].inspect}"
+      assert_equal v["digest"], S.seed_commit(v["text"])
+    end
+    VECTORS["draw"].each do |v|
+      assert_equal v["result"], S.draw(v["n"], v["k"], seed: v["seed"].to_i), "draw #{v.values_at('n', 'k', 'seed')}"
+    end
+  end
+
+  def test_shared_vectors_candidates
+    sets = vector_sets
+    VECTORS["item_sets"].each do |v|
+      assert_equal v["ids"], S.item_ids(vector_items(v)), "ids of #{v['name']}"
+      assert_equal v["fingerprint"], S.item_fingerprint(vector_items(v))
+    end
+    VECTORS["draw_items"].each do |v|
+      got = winners(S.draw_items(sets[v["set"]], v["k"], seed: v["seed"].to_i))
+      assert_equal v["winners"], got, "draw_items #{v.values_at('set', 'k', 'seed')}"
+    end
+    VECTORS["stages"].each do |v|
+      plan = v["stages"].map { |st| [st["name"], st["count"]] }
+      got = S.draw_stages(sets[v["set"]], plan, seed: S.seed_from_text(v["seed_text"])).map do |r|
+        { "name" => r.name, "count" => r.count, "winners" => winners(r.winners) }
+      end
+      assert_equal v["stages"], got, "stages of #{v['set']}"
+    end
+  end
+
+  def test_shared_vectors_sessions
+    v = VECTORS["chacha20_session"]
+    session = S::Session.load(JSON.generate(v["state"]))
+    assert_equal v["expected"], v["draws"].map { |k| session.draw(k) }
+
+    v = VECTORS["seal"]
+    assert_equal v["key_id"], S.seal_key_id(v["token"])
+    session = S::Session.unseal(v["token"], [v["key"]].pack("H*"))
+    assert_equal v["expected"], v["draws"].map { |k| session.draw(k) }
+  end
 
   def test_basics
     assert_equal [7, 2, 6], S.draw(10, 3, seed: 1)
