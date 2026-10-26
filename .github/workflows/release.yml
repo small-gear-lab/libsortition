@@ -5,8 +5,8 @@ name: Release
 #   - the npm package of the WebAssembly build, and sortition.wasm itself
 #   - SHA256SUMS, and a build provenance attestation for every file
 # A person reads the draft and presses "Publish release"; that starts pages.yml, which publishes
-# /vX.Y.Z/ (and /latest/ for a stable version). Publishing to crates.io, npm and NuGet is done by hand
-# (see "Releasing" in AGENTS.md).
+# /vX.Y.Z/ (and /latest/ for a stable version), and publish.yml, which publishes to crates.io, npm and
+# NuGet (see "Releasing" in AGENTS.md).
 #
 # Run by hand ("Run workflow"), it is a dry run: it builds everything from the branch you choose and
 # keeps the files as workflow artifacts, but makes no release and no attestation.
