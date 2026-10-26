@@ -88,6 +88,7 @@ The `yaml` and `toml` features are on by default. The Python and Ruby bindings l
 | `bindings/php/` | PHP extension (PHP 8.2 or later) |
 | `bindings/python/` | Python (ctypes, no dependencies) |
 | `bindings/ruby/` | Ruby (Fiddle, standard library only) |
+| `bindings/swift/` | Swift (SwiftPM; `Package.swift` is at the root of the repository) |
 | `bindings/wasm/` | WebAssembly for browsers and Node (no dependencies), with a demo |
 
 ## Using the libraries

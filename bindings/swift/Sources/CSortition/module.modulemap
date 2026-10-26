@@ -1,0 +1,5 @@
+module CSortition [system] {
+    header "../../../../core/include/sortition.h"
+    link "sortition"
+    export *
+}

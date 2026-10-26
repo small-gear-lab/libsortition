@@ -41,3 +41,7 @@ bindings/dotnet/**/obj/
 bindings/java/.gradle/
 bindings/java/.kotlin/
 bindings/java/build/
+
+# SwiftPM build output
+.build/
+.swiftpm/

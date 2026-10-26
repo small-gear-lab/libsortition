@@ -88,6 +88,7 @@ bindings/wasm/build.sh                        # WebAssembly のビルド。事�
 | `bindings/php/` | PHP 拡張（PHP 8.2 以降） |
 | `bindings/python/` | Python（ctypes、依存なし） |
 | `bindings/ruby/` | Ruby（Fiddle、標準ライブラリのみ） |
+| `bindings/swift/` | Swift（SwiftPM。`Package.swift` はリポジトリ直下） |
 | `bindings/wasm/` | ブラウザと Node 向けの WebAssembly（依存なし）とデモ |
 
 ## ライブラリの使い方

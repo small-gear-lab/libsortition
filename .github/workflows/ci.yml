@@ -209,6 +209,22 @@ jobs:
       - run: go test -race ./...
         working-directory: bindings/go
 
+  # The official Swift image has the newest toolchain; it has no Rust, so the core is built inside it
+  swift:
+    runs-on: ubuntu-latest
+    container: swift:6.4-noble
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          apt-get update
+          apt-get install -y --no-install-recommends curl ca-certificates build-essential
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          . "$HOME/.cargo/env"
+          cargo build --release --locked -p sortition
+      - run: |
+          lib="$PWD/target/release"
+          swift test -Xswiftc -warnings-as-errors -Xlinker -L"$lib" -Xlinker -rpath -Xlinker "$lib"
+
   java:
     needs: core
     runs-on: ubuntu-latest
