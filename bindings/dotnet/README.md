@@ -20,9 +20,17 @@ The winners depend only on the set of candidates and the seed, not on the order 
 - `Session` and `ItemSession`: draw in steps, save and restore the state (`Save`, `Load`), retry safely with idempotency keys (`Draw(k, key)`), and hand a sealed state to a browser (`Seal`, `Unseal`).
 - `Lottery.Draw`, `DrawText` and `DrawData` return positions in the list as given, so a reordered list gives different winners.
 
+## Install
+
+```sh
+dotnet add package Sortition
+```
+
+The package holds only the .NET code: it also needs the native library (next section).
+
 ## Finding the native library
 
-The package needs `libsortition` (`libsortition.so`, `libsortition.dylib` or `sortition.dll`). It is looked up through the `LIBSORTITION_PATH` environment variable, next to the program, in a `target/release` folder above the program or the working directory, and then in the usual places of the system. Build it from a checkout of the repository with `cargo build --release`.
+The package needs `libsortition` (`libsortition.so`, `libsortition.dylib` or `sortition.dll`). Get it from the [releases page](https://github.com/small-gear-lab/libsortition/releases) (the `lib/` folder of the archive for your platform: Linux, macOS or Windows), or build it from a checkout of the repository with `cargo build --release`. It is looked up through the `LIBSORTITION_PATH` environment variable, next to the program, in a `target/release` folder above the program or the working directory, and then in the usual places of the system.
 
 ## Build and test
 

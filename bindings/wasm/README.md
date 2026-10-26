@@ -4,6 +4,14 @@ Fair, repeatable and verifiable random lotteries for browsers and Node.js: it pi
 
 > **Status: experimental (0.1).** The interface may change before 1.0.
 
+## Install
+
+```sh
+npm install libsortition-wasm
+```
+
+It is an ES module package: use it from Node.js 22 or later (`import`), or from a bundler. In a browser without a bundler, load `sortition.js` from a versioned build (below).
+
 ```js
 import { load, seedFromText } from "libsortition-wasm";
 

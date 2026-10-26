@@ -19,7 +19,7 @@ print(Lottery.seedCommit('my seed')); // publish this before the draw
 
 ## The native library
 
-Build it once (`cargo build --release` at the root of the repository) and tell Dart where it is:
+Get it from the [releases page](https://github.com/small-gear-lab/libsortition/releases) (the `lib/` folder of the archive for your platform), or build it once (`cargo build --release` at the root of the repository). Then tell Dart where it is:
 
 - set `LIBSORTITION_PATH` to the file (`libsortition.so`, `libsortition.dylib` or `sortition.dll`), or
 - put it in `target/release` of the working directory or any directory above it, or

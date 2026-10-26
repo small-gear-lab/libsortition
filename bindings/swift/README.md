@@ -26,7 +26,7 @@ print(Lottery.seedCommit("my seed"))  // publish this before the draw
 .product(name: "Sortition", package: "libsortition"),
 ```
 
-Build the native library once (`cargo build --release`), and tell the linker where it is:
+Get the native library from the [releases page](https://github.com/small-gear-lab/libsortition/releases) (the `lib/` folder of the archive for your platform), or build it once (`cargo build --release`). Then tell the linker where it is:
 
 ```sh
 swift build -Xlinker -L/path/to/libsortition/target/release
