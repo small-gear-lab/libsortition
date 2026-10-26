@@ -34,6 +34,14 @@ jobs:
       # wasm には OS の乱数源がないので、.cargo/config.toml の custom backend で解く（ビルドできることの確認）
       - run: cargo clippy --locked --release --target wasm32-unknown-unknown -p sortition -- -D warnings
       - run: cargo build --release --locked -p sortition
+      # crates.io に出す crate に、ライセンスと NOTICE が実体で入っていること。
+      # core/ のそれらはルートへのシンボリックリンクなので、壊れたり別の内容のコピーに置き換わったりしていないか確かめる
+      - name: The crate package contains the license files
+        run: |
+          cargo package -p sortition --locked --no-verify
+          for f in LICENSE-MIT LICENSE-APACHE NOTICE; do
+            tar -xzOf target/package/sortition-*.crate --wildcards "sortition-*/$f" | cmp - "$f"
+          done
       - uses: actions/upload-artifact@v7
         with:
           name: libsortition-linux

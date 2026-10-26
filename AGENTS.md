@@ -67,6 +67,8 @@ Every folder has a `manifest.json` with the SHA-384 of its files. `gh-pages` is 
 - Byte-string candidates are sorted by ID before drawing, so the result does not depend on input order. Identical byte strings get different IDs through the occurrence number.
 - **`save()` output contains the random generator's state.** Anyone who holds it can predict later draws and forge a state. Anything handed to an untrusted party must be sealed (`seal`), never saved plain.
 
+**License files have one source.** `LICENSE-MIT`, `LICENSE-APACHE` and `NOTICE` live at the root. `core/` holds symbolic links to them so that the crate package contains the files (CI checks that the packaged files are identical to the root ones); do not replace the links with copies. `pages.py` copies them from the root into every published folder. Any new package (npm, wheel, gem) has to ship them too.
+
 **Don't leak resources.** Sessions are freed by `close()` and, as a fallback, by finalizers (Ruby, Node.js, WASM) or object destructors (PHP, Python `__del__`). The WASM and PHP tests include memory-growth checks; keep them passing.
 
 ## Commits
