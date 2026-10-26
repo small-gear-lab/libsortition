@@ -7,7 +7,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
 
+use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+use chacha20::ChaCha20;
+
 mod data;
+mod hex;
 mod host;
 mod items;
 mod session;
@@ -79,15 +83,51 @@ impl Xoshiro256 {
     }
 }
 
+/// ChaCha20 の鍵流を使う暗号論的乱数。状態は（鍵, 読み出し位置）だけなので保存・復元できる。
+/// 鍵を知らない者は、出力をいくら見ても以降の出力を予測できない。
+struct ChaChaRng {
+    key: [u8; 32],
+    /// 鍵流の読み出し位置（バイト）。8 の倍数
+    pos: u64,
+}
+
+/// IETF 版 ChaCha20 のカウンタは 32 ビット（64 バイトのブロック × 2^32 = 2^38 バイト）
+const CHACHA_LIMIT: u64 = 1 << 38;
+
+impl ChaChaRng {
+    fn from_os() -> Result<Self, i32> {
+        let mut key = [0u8; 32];
+        getrandom::fill(&mut key).map_err(|_| SORTITION_ERR_RNG)?;
+        Ok(Self { key, pos: 0 })
+    }
+
+    fn next_u64(&mut self) -> Result<u64, i32> {
+        if self.pos > CHACHA_LIMIT - 8 {
+            return Err(SORTITION_ERR_RNG);
+        }
+        let mut cipher = ChaCha20::new(&self.key.into(), &[0u8; 12].into());
+        cipher.seek(self.pos);
+        let mut buf = [0u8; 8];
+        cipher.apply_keystream(&mut buf);
+        self.pos += 8;
+        Ok(u64::from_le_bytes(buf))
+    }
+}
+
 enum Source {
+    /// 状態を持たず、呼ぶたびに OS から取る（一回きりの `draw` 用）
     Os,
+    /// シード指定（再現できるが、暗号論的ではない）
     Seeded(Xoshiro256),
+    /// シード指定なしのセッション用。OS から取った鍵で ChaCha20 を回し、状態に含めて保存する
+    Secure(ChaChaRng),
 }
 
 impl Source {
     fn next_u64(&mut self) -> Result<u64, i32> {
         match self {
             Source::Seeded(r) => Ok(r.next_u64()),
+            Source::Secure(r) => r.next_u64(),
             Source::Os => {
                 let mut buf = [0u8; 8];
                 getrandom::fill(&mut buf).map_err(|_| SORTITION_ERR_RNG)?;
@@ -362,6 +402,22 @@ mod tests {
         assert_eq!(r, SORTITION_ERR_UTF8 as i64);
         let r = unsafe { sortition_draw_text(text.as_ptr(), text.len(), 1, std::ptr::null(), out.as_mut_ptr(), 1) };
         assert_eq!(r, SORTITION_ERR_INVALID as i64);
+    }
+
+    #[test]
+    fn chacha_matches_known_keystream_and_seeks() {
+        // RFC 8439 系の既知値: 鍵・ナンスとも 0 の ChaCha20 鍵流の先頭 8 バイト
+        let mut r = ChaChaRng { key: [0; 32], pos: 0 };
+        assert_eq!(r.next_u64().unwrap().to_le_bytes(), [0x76, 0xb8, 0xe0, 0xad, 0xa0, 0xf1, 0x3d, 0x90]);
+        // 位置を指定して読んだ値は、先頭から順に読んだ値と一致する（ブロック境界をまたぐ）
+        let mut seq = ChaChaRng { key: [7; 32], pos: 0 };
+        let all: Vec<u64> = (0..40).map(|_| seq.next_u64().unwrap()).collect();
+        for (i, want) in all.iter().enumerate() {
+            let mut at = ChaChaRng { key: [7; 32], pos: 8 * i as u64 };
+            assert_eq!(at.next_u64().unwrap(), *want);
+        }
+        let mut end = ChaChaRng { key: [7; 32], pos: CHACHA_LIMIT };
+        assert_eq!(end.next_u64(), Err(SORTITION_ERR_RNG));
     }
 
     #[test]

@@ -3,8 +3,13 @@
 //! `0..n` を母集団として、呼ぶたびに続きから非復元抽出する。途中経過は JSON に保存でき、
 //! 復元すれば同じ続きから引ける（ホストが DB などに預けておく用途）。
 //!
-//! シード指定ありなら乱数列の状態も保存するので、何回に分けて引いても
-//! `draw(n, k1 + k2 + ..., seed)` と同じ並びになる。
+//! 乱数列の状態も保存するので、何回に分けて引いても、保存・復元をはさんでも、
+//! 引く並びは変わらない（シード指定ありなら `draw(n, k1 + k2 + ..., seed)` と同じ並び）。
+//! シード指定なしでは、作成時に OS から取った鍵で ChaCha20 を回し、その鍵と位置を状態に含める。
+//! 同じ状態から引けば同じ結果になるので、古い状態を再送しても引き直しにならない。
+//!
+//! **`save()` の出力には乱数の内部状態が入る。** 持っている者は以降の当選を予測できるので、
+//! 信頼できない相手には渡さないこと（封をして渡す場合は `seal` を使う）。
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_char;
@@ -12,12 +17,13 @@ use std::ffi::CString;
 
 use serde_json::{json, Value};
 
+use crate::hex;
 use crate::{
-    set_last_error, Source, Xoshiro256, SORTITION_ERR_INTERNAL, SORTITION_ERR_INVALID,
+    set_last_error, ChaChaRng, Source, Xoshiro256, CHACHA_LIMIT, SORTITION_ERR_INTERNAL, SORTITION_ERR_INVALID,
     SORTITION_ERR_STATE, SORTITION_ERR_UTF8, SORTITION_OK,
 };
 
-const STATE_VERSION: u64 = 1;
+const STATE_VERSION: u64 = 2;
 
 /// 1 回分の `step` を元に戻すための記録
 struct Undo {
@@ -44,12 +50,13 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(n: u32, seed: Option<u64>) -> Self {
+    /// シード指定なしなら OS から鍵を取る。取れなければ `SORTITION_ERR_RNG`。
+    pub fn new(n: u32, seed: Option<u64>) -> Result<Self, i32> {
         let src = match seed {
             Some(s) => Source::Seeded(Xoshiro256::from_seed(s)),
-            None => Source::Os,
+            None => Source::Secure(ChaChaRng::from_os()?),
         };
-        Self { n, src, drawn: Vec::new(), swapped: HashMap::new() }
+        Ok(Self { n, src, drawn: Vec::new(), swapped: HashMap::new() })
     }
 
     /// 母集団の大きさ `n`
@@ -107,8 +114,16 @@ impl Session {
     /// 64 ビット値は JS で丸められないよう 10 進文字列にしている。
     pub fn save(&self) -> String {
         let rng = match &self.src {
-            Source::Os => Value::Null,
-            Source::Seeded(r) => Value::Array(r.s.iter().map(|v| Value::String(v.to_string())).collect()),
+            Source::Seeded(r) => json!({
+                "kind": "xoshiro256",
+                "s": r.s.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+            }),
+            Source::Secure(r) => json!({
+                "kind": "chacha20",
+                "key": hex::encode(&r.key),
+                "pos": r.pos.to_string(),
+            }),
+            Source::Os => unreachable!("sessions never use the stateless OS source"),
         };
         let mut swapped: Vec<(u32, u32)> = self.swapped.iter().map(|(&k, &v)| (k, v)).collect();
         swapped.sort_unstable();
@@ -133,9 +148,11 @@ impl Session {
         let to_u32 = |x: &Value| x.as_u64().and_then(|x| u32::try_from(x).ok());
         let n = obj.get("n").and_then(to_u32).ok_or_else(|| bad("invalid n"))?;
 
-        let src = match obj.get("rng") {
-            Some(Value::Null) => Source::Os,
-            Some(Value::Array(a)) if a.len() == 4 => {
+        let rng = obj.get("rng").and_then(Value::as_object).ok_or_else(|| bad("invalid rng"))?;
+        let src = match rng.get("kind").and_then(Value::as_str) {
+            Some("xoshiro256") => {
+                let a = rng.get("s").and_then(Value::as_array).filter(|a| a.len() == 4);
+                let a = a.ok_or_else(|| bad("invalid rng"))?;
                 let mut s = [0u64; 4];
                 for (slot, x) in s.iter_mut().zip(a) {
                     *slot = x.as_str().and_then(|x| x.parse().ok()).ok_or_else(|| bad("invalid rng"))?;
@@ -144,6 +161,16 @@ impl Session {
                     return Err(bad("invalid rng"));
                 }
                 Source::Seeded(Xoshiro256 { s })
+            }
+            Some("chacha20") => {
+                let key = rng.get("key").and_then(Value::as_str).and_then(hex::decode::<32>);
+                let pos = rng.get("pos").and_then(Value::as_str).and_then(|p| p.parse::<u64>().ok());
+                match (key, pos) {
+                    (Some(key), Some(pos)) if pos % 8 == 0 && pos <= CHACHA_LIMIT => {
+                        Source::Secure(ChaChaRng { key, pos })
+                    }
+                    _ => return Err(bad("invalid rng")),
+                }
             }
             _ => return Err(bad("invalid rng")),
         };
@@ -203,8 +230,13 @@ pub unsafe extern "C" fn sortition_session_new(n: u32, seed: *const u64, out: *m
         return SORTITION_ERR_INVALID;
     }
     let seed = if seed.is_null() { None } else { Some(*seed) };
-    *out = Box::into_raw(Box::new(Session::new(n, seed)));
-    SORTITION_OK
+    match Session::new(n, seed) {
+        Ok(s) => {
+            *out = Box::into_raw(Box::new(s));
+            SORTITION_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// C ABI: 続きから `k` 個引いて `out[0..k]` に書く。`k` が残りを超えるなら `SORTITION_ERR_INVALID`（状態は変わらない）。
@@ -333,7 +365,7 @@ mod tests {
 
     #[test]
     fn split_draws_equal_one_draw_with_seed() {
-        let mut s = Session::new(1000, Some(42));
+        let mut s = Session::new(1000, Some(42)).unwrap();
         let mut got = s.draw(3).unwrap();
         got.extend(s.draw(0).unwrap());
         got.extend(s.draw(5).unwrap());
@@ -345,7 +377,7 @@ mod tests {
 
     #[test]
     fn exhausts_without_repeats() {
-        let mut s = Session::new(50, None);
+        let mut s = Session::new(50, None).unwrap();
         let mut all = Vec::new();
         while s.remaining() > 0 {
             all.extend(s.draw(7.min(s.remaining())).unwrap());
@@ -357,7 +389,7 @@ mod tests {
 
     #[test]
     fn over_draw_leaves_state_untouched() {
-        let mut s = Session::new(5, Some(1));
+        let mut s = Session::new(5, Some(1)).unwrap();
         s.draw(3).unwrap();
         let before = s.save();
         assert_eq!(s.draw(3), Err(SORTITION_ERR_INVALID));
@@ -366,13 +398,13 @@ mod tests {
 
     #[test]
     fn save_load_resumes_seeded() {
-        let mut a = Session::new(200, Some(9));
+        let mut a = Session::new(200, Some(9)).unwrap();
         let mut got = a.draw(20).unwrap();
         let mut b = Session::load(&a.save()).unwrap();
         got.extend(b.draw(30).unwrap());
         assert_eq!(got, draw(200, 50, Some(9)).unwrap());
         assert_eq!(b.save(), {
-            let mut c = Session::new(200, Some(9));
+            let mut c = Session::new(200, Some(9)).unwrap();
             c.draw(50).unwrap();
             c.save()
         });
@@ -380,7 +412,7 @@ mod tests {
 
     #[test]
     fn save_load_resumes_os_without_repeats() {
-        let mut a = Session::new(100, None);
+        let mut a = Session::new(100, None).unwrap();
         let mut all = a.draw(40).unwrap();
         let mut b = Session::load(&a.save()).unwrap();
         all.extend(b.draw(60).unwrap());
@@ -390,7 +422,7 @@ mod tests {
 
     #[test]
     fn huge_n_state_stays_small() {
-        let mut s = Session::new(u32::MAX, None);
+        let mut s = Session::new(u32::MAX, None).unwrap();
         s.draw(100).unwrap();
         let mut t = Session::load(&s.save()).unwrap();
         assert!(!t.draw(100).unwrap().iter().any(|x| s.drawn().contains(x)));
@@ -398,7 +430,7 @@ mod tests {
 
     #[test]
     fn rejects_tampered_state() {
-        let mut s = Session::new(10, Some(3));
+        let mut s = Session::new(10, Some(3)).unwrap();
         s.draw(4).unwrap();
         let good: Value = serde_json::from_str(&s.save()).unwrap();
 
@@ -408,15 +440,57 @@ mod tests {
             Session::load(&v.to_string()).err()
         };
         assert!(Session::load(&good.to_string()).is_ok());
-        assert!(mutate(&|v| v["version"] = json!(2)).is_some());
+        assert!(mutate(&|v| v["version"] = json!(1)).is_some());
+        assert!(mutate(&|v| v["version"] = json!(3)).is_some());
         assert!(mutate(&|v| v["n"] = json!(3)).is_some());
         assert!(mutate(&|v| v["drawn"][0] = v["drawn"][1].clone()).is_some());
         assert!(mutate(&|v| v["drawn"][0] = json!(10)).is_some());
         assert!(mutate(&|v| v["swapped"] = json!([])).is_some());
-        assert!(mutate(&|v| v["rng"] = json!(["0", "0", "0", "0"])).is_some());
-        assert!(mutate(&|v| v["rng"] = json!([1, 2, 3, 4])).is_some());
+        assert!(mutate(&|v| v["rng"] = json!(null)).is_some());
+        assert!(mutate(&|v| v["rng"] = json!(["1", "2", "3", "4"])).is_some()); // 旧形式
+        assert!(mutate(&|v| v["rng"]["kind"] = json!("mt19937")).is_some());
+        assert!(mutate(&|v| v["rng"]["s"] = json!(["0", "0", "0", "0"])).is_some());
+        assert!(mutate(&|v| v["rng"]["s"] = json!([1, 2, 3, 4])).is_some());
         assert!(Session::load("not json").is_err());
         assert!(Session::load("[]").is_err());
+    }
+
+    #[test]
+    fn unseeded_state_is_chacha_and_resume_is_deterministic() {
+        let mut a = Session::new(100, None).unwrap();
+        a.draw(10).unwrap();
+        let state: Value = serde_json::from_str(&a.save()).unwrap();
+        assert_eq!(state["rng"]["kind"], "chacha20");
+        assert_eq!(state["rng"]["pos"], "80"); // 8 バイト × 10 回（棄却がなければ）
+
+        // 同じ状態から引けば何度でも同じ結果になる（古い状態を再送しても引き直しにならない）
+        let saved = a.save();
+        let first = a.draw(5).unwrap();
+        for _ in 0..3 {
+            let mut b = Session::load(&saved).unwrap();
+            assert_eq!(b.draw(5).unwrap(), first);
+        }
+        // 別のセッションは別の鍵を持つ
+        let mut c = Session::new(100, None).unwrap();
+        let mut d = Session::new(100, None).unwrap();
+        assert_ne!(c.draw(10).unwrap(), d.draw(10).unwrap());
+    }
+
+    #[test]
+    fn rejects_bad_chacha_state() {
+        let a = Session::new(10, None).unwrap();
+        let good: Value = serde_json::from_str(&a.save()).unwrap();
+        let mutate = |f: &dyn Fn(&mut Value)| {
+            let mut v = good.clone();
+            f(&mut v);
+            Session::load(&v.to_string()).is_err()
+        };
+        assert!(!mutate(&|_| {}));
+        assert!(mutate(&|v| v["rng"]["key"] = json!("abcd")));
+        assert!(mutate(&|v| v["rng"]["key"] = json!("zz".repeat(32))));
+        assert!(mutate(&|v| v["rng"]["pos"] = json!("7"))); // 8 の倍数でない
+        assert!(mutate(&|v| v["rng"]["pos"] = json!((CHACHA_LIMIT + 8).to_string())));
+        assert!(mutate(&|v| v["rng"]["pos"] = json!(8))); // 文字列でない
     }
 
     #[test]

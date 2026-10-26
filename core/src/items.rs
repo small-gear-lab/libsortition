@@ -13,6 +13,7 @@ use std::ffi::{c_char, CString};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::hex;
 use crate::session::{Session, StateError};
 use crate::{
     set_last_error, SORTITION_ERR_INTERNAL, SORTITION_ERR_INVALID, SORTITION_ERR_STATE,
@@ -68,18 +69,11 @@ fn fingerprint_of_sorted<'a>(ids: impl ExactSizeIterator<Item = &'a Id>) -> Id {
 }
 
 fn to_hex(id: &Id) -> String {
-    id.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(id)
 }
 
 fn from_hex(s: &str) -> Option<Id> {
-    if s.len() != 64 || !s.is_ascii() {
-        return None;
-    }
-    let mut id = [0u8; 32];
-    for (slot, pair) in id.iter_mut().zip(s.as_bytes().chunks(2)) {
-        *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-    }
-    Some(id)
+    hex::decode(s)
 }
 
 /// 候補を ID 昇順に並べたときの対応表（昇順の位置 → 入力の位置）と、昇順の ID。
@@ -111,7 +105,7 @@ impl ItemSession {
     pub fn new(items: &[&[u8]], seed: Option<u64>) -> Result<Self, i32> {
         let (order, ids) = canonical_order(items)?;
         let fingerprint = fingerprint_of_sorted(ids.iter());
-        Ok(Self { inner: Session::new(ids.len() as u32, seed), order, ids, fingerprint })
+        Ok(Self { inner: Session::new(ids.len() as u32, seed)?, order, ids, fingerprint })
     }
 
     pub fn remaining(&self) -> u32 {
@@ -605,7 +599,7 @@ mod tests {
         assert!(mutate(&|v| v["session"]["n"] = json!(3)));
         assert!(ItemSession::load("not json", &items).is_err());
         // 数値セッションの状態は別物として拒否する
-        assert!(ItemSession::load(&Session::new(8, None).save(), &items).is_err());
+        assert!(ItemSession::load(&Session::new(8, None).unwrap().save(), &items).is_err());
     }
 
     #[test]

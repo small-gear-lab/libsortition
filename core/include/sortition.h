@@ -61,7 +61,12 @@ const char *sortition_last_error(void);
  * 1 つのセッションを複数スレッドから同時に使ってはいけない。 */
 typedef struct sortition_session sortition_session;
 
-/* seed が NULL なら OS 乱数。*out は sortition_session_free で解放。 */
+/* seed が NULL なら、作成時に OS から取った鍵で ChaCha20 を回す（暗号論的乱数）。鍵と読み出し位置は
+ * 保存状態に入るので、同じ状態から引けば同じ結果になる（古い状態を再送しても引き直しにならない）。
+ * seed ありなら xoshiro256** で、結果は再現できるが暗号論的ではない。
+ * 注意: sortition_session_save の出力には乱数の内部状態が入る。持っている者は以降の当選を予測できる
+ * ので、信頼できない相手には渡さないこと。
+ * *out は sortition_session_free で解放。 */
 int32_t sortition_session_new(uint32_t n, const uint64_t *seed, sortition_session **out);
 
 /* 続きから k 個引いて out[0..k] に書く。k が残りを超えると SORTITION_ERR_INVALID（状態は変わらない）。 */
