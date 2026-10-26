@@ -1,3 +1,4 @@
 # テストベクトル（test-vectors/vectors.json）はバイト単位で比べるので、Windows でも改行を LF のままにする
 * text=auto eol=lf
 *.wasm binary
+*.bat text eol=crlf

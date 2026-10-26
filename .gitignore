@@ -36,3 +36,8 @@ bindings/wasm/NOTICE
 # .NET build output
 bindings/dotnet/**/bin/
 bindings/dotnet/**/obj/
+
+# Java/Kotlin build output
+bindings/java/.gradle/
+bindings/java/.kotlin/
+bindings/java/build/

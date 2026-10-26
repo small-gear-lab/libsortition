@@ -83,6 +83,7 @@ bindings/wasm/build.sh                        # WebAssembly のビルド。事�
 | `cli/` | `sortition` コマンド（リストからの抽選と、記録した抽選の検証） |
 | `bindings/dotnet/` | .NET: C#、F#、VB.NET（P/Invoke、.NET 10） |
 | `bindings/go/` | Go（WebAssembly を wazero で動かす。cgo なし） |
+| `bindings/java/` | Java 25（Foreign Function & Memory API。Kotlin からも使える） |
 | `bindings/node/` | Node.js（N-API ネイティブアドオン） |
 | `bindings/php/` | PHP 拡張（PHP 8.2 以降） |
 | `bindings/python/` | Python（ctypes、依存なし） |

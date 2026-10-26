@@ -209,6 +209,23 @@ jobs:
       - run: go test -race ./...
         working-directory: bindings/go
 
+  java:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "25"
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: libsortition-linux
+          path: target/release
+      - run: ./gradlew test javadoc
+        working-directory: bindings/java
+
   dotnet:
     needs: core
     runs-on: ubuntu-latest

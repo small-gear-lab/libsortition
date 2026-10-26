@@ -19,7 +19,7 @@ libsortition is a small library for unbiased random lotteries: draw `k` of `n` c
 | `test-vectors/` | `vectors.json` (made by the Rust tests, read by every binding's tests) and `reference.py` (a second implementation written from SPEC.md alone) |
 | `cli/` | The `sortition` command (crate `sortition-cli`): `draw`, `verify`, `fingerprint`, `commit`. It uses the core's `draw_items` directly |
 | `examples/c/` | A C example (it also builds as C++) that uses the C ABI; CI builds and runs it |
-| `bindings/{dotnet,go,node,php,python,ruby,wasm}` | One binding each. `wasm/persist.js` is the browser persistence helper, `wasm/demo/` the demo |
+| `bindings/{dotnet,go,java,node,php,python,ruby,wasm}` | One binding each. `wasm/persist.js` is the browser persistence helper, `wasm/demo/` the demo |
 
 ## Build and test
 
@@ -35,6 +35,7 @@ cargo test -p sortition                  # core tests
 | Python | `python3 -m unittest discover -s bindings/python/tests` |
 | Ruby | `ruby -Ibindings/ruby/lib bindings/ruby/test/sortition_test.rb` |
 | Go | `cd bindings/go && go test ./...` (Go 1.26+; it embeds `sortition.wasm`, so it needs no native library. After any change to the core run `go generate` there and commit the new `sortition.wasm`, or `go get` users get the old core) |
+| Java (and Kotlin) | `cd bindings/java && ./gradlew test` (needs JDK 25; finds the library in `target/release`, or through `LIBSORTITION_PATH`) |
 | .NET | `dotnet test bindings/dotnet` (needs the .NET 10 SDK; finds the library in `target/release`, or through `LIBSORTITION_PATH`) |
 | Node.js | `cd bindings/node && npm install && npm run build && npm test` |
 | Reference | `python3 test-vectors/reference.py` (reproduces `test-vectors/vectors.json` from SPEC.md's rules) |
