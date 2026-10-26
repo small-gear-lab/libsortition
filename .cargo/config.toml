@@ -1,0 +1,4 @@
+# wasm32-unknown-unknown には OS の乱数源がないので、getrandom の custom backend を使う
+# （core/src/lib.rs の wasm_rng が JS の import `env.sortition_random_fill` に委ねる）
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="custom"']
