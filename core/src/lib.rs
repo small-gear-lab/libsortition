@@ -9,6 +9,8 @@ use std::ffi::{c_char, CStr, CString};
 
 mod data;
 mod host;
+mod session;
+pub use session::{Session, StateError};
 pub use data::{
     draw_data, DataError, SORTITION_FORMAT_JSON, SORTITION_FORMAT_TOML, SORTITION_FORMAT_YAML,
 };
@@ -29,6 +31,9 @@ pub const SORTITION_ERR_PATH: i32 = -5;
 pub const SORTITION_ERR_FORMAT: i32 = -6;
 /// 内部エラー（パニックを FFI の境界で捕捉した）
 pub const SORTITION_ERR_INTERNAL: i32 = -7;
+
+/// 保存したセッション状態が不正（形式・バージョン・中身の矛盾）
+pub const SORTITION_ERR_STATE: i32 = -8;
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
