@@ -25,6 +25,7 @@ A small library for unbiased random lotteries: it picks `k` of `n` candidates wi
 | `core/` | the Rust crate (`cdylib` and `rlib`) and the C header |
 | `bindings/node/` | Node.js (N-API native addon) |
 | `bindings/php/` | PHP extension (PHP 8.2 or later) |
+| `cli/` | The `sortition` command: draw from a list and verify a recorded draw |
 | `bindings/python/` | Python (ctypes, no dependencies) |
 | `bindings/ruby/` | Ruby (Fiddle, standard library only) |
 | `bindings/wasm/` | WebAssembly for browsers and Node (no dependencies), with a demo |
@@ -126,6 +127,20 @@ Nothing here stops an organizer from throwing the result away and starting a new
 cd bindings/node && npm install && npm run build && npm test   # Node.js
 bindings/wasm/build.sh                                          # needs: rustup target add wasm32-unknown-unknown
 ```
+
+## Command line
+
+`sortition` draws from a list and checks a recorded draw. It runs the same code as the libraries, so it gives the same winners as every binding for the same candidates and seed.
+
+```sh
+cargo install --path cli                 # from a checkout; installs the `sortition` command
+
+sortition commit "my seed"               # the commitment to publish before the draw, and the seed number
+sortition draw names.txt --seed "my seed" --stage "Runner-up:3" --stage "Grand prize:1" --record record.json
+sortition verify record.json names.txt --commit <the commitment you published>
+```
+
+`names.txt` has one candidate per line. The record holds the seed string, the fingerprint of the candidate set and the winners. Anyone who has the candidate list can run `sortition verify`; the order of the list does not matter. `sortition fingerprint names.txt` prints the fingerprint to publish before the draw, and `--random-seed` makes a seed string for you. Exit status is 0 on success, 1 when a verification fails and 2 on a usage or input error.
 
 ## Fairness and security
 

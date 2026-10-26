@@ -1,0 +1,24 @@
+[package]
+name = "sortition-cli"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Command-line tool to draw winners reproducibly from a list, and to verify a recorded draw (libsortition)"
+license = "MIT OR Apache-2.0"
+readme = "../README.md"
+repository = "https://github.com/small-gear-lab/libsortition"
+homepage = "https://small-gear-lab.github.io/libsortition/"
+keywords = ["lottery", "random", "cli", "sampling", "verification"]
+categories = ["command-line-utilities"]
+authors = ["marie-222 <289302950+marie-222@users.noreply.github.com>"]
+
+[[bin]]
+name = "sortition"
+path = "src/main.rs"
+
+[dependencies]
+# 候補は 1 行 1 候補のテキストなので、YAML / TOML の読み込みは要らない
+sortition = { version = "0.1.0", path = "../core", default-features = false }
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
+getrandom = "0.3"
+serde_json = { version = "1", features = ["preserve_order"] }

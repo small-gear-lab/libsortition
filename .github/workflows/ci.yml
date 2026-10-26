@@ -29,7 +29,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p sortition
       - run: cargo test --locked -p sortition --no-default-features
+      - run: cargo test --locked -p sortition-cli
       - run: cargo clippy --all-targets --locked -p sortition -- -D warnings
+      - run: cargo clippy --all-targets --locked -p sortition-cli -- -D warnings
       - run: cargo clippy --locked -p sortition --no-default-features -- -D warnings
       # wasm には OS の乱数源がないので、.cargo/config.toml の custom backend で解く（ビルドできることの確認）
       - run: cargo clippy --locked --release --target wasm32-unknown-unknown -p sortition -- -D warnings
@@ -41,6 +43,13 @@ jobs:
           cargo package -p sortition --locked --no-verify
           for f in LICENSE-MIT LICENSE-APACHE NOTICE; do
             tar -xzOf target/package/sortition-*.crate --wildcards "sortition-*/$f" | cmp - "$f"
+          done
+      # sortition-cli の crate は、sortition が crates.io に公開されるまでパッケージにできないので、
+      # cli/ のリンクが、ルートの同じ内容を指していることだけを確かめる
+      - name: The license links in cli/ point to the root files
+        run: |
+          for f in LICENSE-MIT LICENSE-APACHE NOTICE; do
+            cmp "cli/$f" "$f"
           done
       - uses: actions/upload-artifact@v7
         with:
@@ -64,6 +73,7 @@ jobs:
       - run: CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo generate-lockfile
       - run: cargo test --locked -p sortition
       - run: cargo test --locked -p sortition --no-default-features
+      - run: cargo test --locked -p sortition-cli
 
   python:
     needs: core

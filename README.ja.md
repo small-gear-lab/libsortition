@@ -25,6 +25,7 @@
 | `core/` | Rust のクレート（`cdylib` と `rlib`）と C ヘッダ |
 | `bindings/node/` | Node.js（N-API ネイティブアドオン） |
 | `bindings/php/` | PHP 拡張（PHP 8.2 以降） |
+| `cli/` | `sortition` コマンド（リストからの抽選と、記録した抽選の検証） |
 | `bindings/python/` | Python（ctypes、依存なし） |
 | `bindings/ruby/` | Ruby（Fiddle、標準ライブラリのみ） |
 | `bindings/wasm/` | ブラウザと Node 向けの WebAssembly（依存なし）とデモ |
@@ -126,6 +127,20 @@ new_token = lot.seal(key)                          # picks と new_token をブ�
 cd bindings/node && npm install && npm run build && npm test   # Node.js
 bindings/wasm/build.sh                                          # 事前に rustup target add wasm32-unknown-unknown
 ```
+
+## コマンドライン
+
+`sortition` コマンドは、リストからの抽選と、記録した抽選の検証ができます。ライブラリと同じコードで動くので、同じ候補と seed なら、どのバインディングとも同じ当選者になります。
+
+```sh
+cargo install --path cli                 # チェックアウトから。`sortition` コマンドが入る
+
+sortition commit "my seed"               # 抽選の前に公開するコミット値と、seed の数値
+sortition draw names.txt --seed "my seed" --stage "副賞:3" --stage "大賞:1" --record record.json
+sortition verify record.json names.txt --commit <公開しておいたコミット値>
+```
+
+`names.txt` は 1 行 1 候補です。記録には、seed の文字列、候補集合の指紋、当選者が入ります。候補のリストを持っている人は誰でも `sortition verify` で確かめられ、リストの並びは問いません。`sortition fingerprint names.txt` で、抽選の前に公開する指紋を出せます。`--random-seed` で seed の文字列を作ることもできます。終了コードは、成功が 0、検証の失敗が 1、使い方や入力の誤りが 2 です。
 
 ## 公平さと安全性
 

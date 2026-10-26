@@ -25,6 +25,9 @@ pub use data::{
     draw_data, DataError, SORTITION_FORMAT_JSON, SORTITION_FORMAT_TOML, SORTITION_FORMAT_YAML,
 };
 
+/// ライブラリのバージョン
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// 成功
 pub const SORTITION_OK: i32 = 0;
 /// 引数が不正（`k > n`、`out` が NULL など）

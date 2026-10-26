@@ -15,6 +15,7 @@ libsortition is a small library for unbiased random lotteries: draw `k` of `n` c
 | `core/src/seal.rs` | Sealing a state into a token (XChaCha20-Poly1305) |
 | `core/src/host.rs`, `hex.rs` | WASM host helpers (alloc, random import); hex helpers |
 | `core/include/sortition.h` | The C header. It documents the contract of every exported function |
+| `cli/` | The `sortition` command (crate `sortition-cli`): `draw`, `verify`, `fingerprint`, `commit`. It uses the core's `draw_items` directly |
 | `bindings/{node,php,python,ruby,wasm}` | One binding each. `wasm/persist.js` is the browser persistence helper, `wasm/demo/` the demo |
 
 ## Build and test
@@ -31,6 +32,7 @@ cargo test -p sortition                  # core tests
 | Python | `python3 -m unittest discover -s bindings/python/tests` |
 | Ruby | `ruby -Ibindings/ruby/lib bindings/ruby/test/sortition_test.rb` |
 | Node.js | `cd bindings/node && npm install && npm run build && npm test` |
+| CLI | `cargo test -p sortition-cli` (runs the built binary) |
 | WebAssembly | `rustup target add wasm32-unknown-unknown`, then `bindings/wasm/build.sh`, then `cd bindings/wasm && npm test` |
 | PHP | `cd bindings/php && phpize && ./configure --with-sortition && make && NO_INTERACTION=1 make test TESTS=tests`, then `phpize --clean` |
 
@@ -68,6 +70,8 @@ Every folder has a `manifest.json` with the SHA-384 of its files. `gh-pages` is 
 - **`save()` output contains the random generator's state.** Anyone who holds it can predict later draws and forge a state. Anything handed to an untrusted party must be sealed (`seal`), never saved plain.
 
 **License files have one source.** `LICENSE-MIT`, `LICENSE-APACHE` and `NOTICE` live at the root. `core/` holds symbolic links to them so that the crate package contains the files (CI checks that the packaged files are identical to the root ones); do not replace the links with copies. `pages.py` copies them from the root into every published folder. Any new package (npm, wheel, gem) has to ship them too.
+
+**The seed rule and the draw order are shared by everything.** The seed of a string is the first 8 bytes of its SHA-256 as a little-endian u64 (`core/src/seed.rs`); staged draws take the total with `draw_items` and cut it up in order. The CLI test `draw_matches_the_library_and_other_bindings` pins the winners for one candidate list and seed, and Python, Ruby, Node.js, WebAssembly and PHP must give the same ones. The record written by `sortition draw` has a format name (`libsortition-draw-record/1`); change the number whenever its format changes. Publish `sortition` to crates.io before `sortition-cli` (the CLI's package cannot be built until the crate it depends on exists there).
 
 **Don't leak resources.** Sessions are freed by `close()` and, as a fallback, by finalizers (Ruby, Node.js, WASM) or object destructors (PHP, Python `__del__`). The WASM and PHP tests include memory-growth checks; keep them passing.
 
