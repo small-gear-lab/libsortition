@@ -1,0 +1,91 @@
+name: Pages
+
+# WebAssembly 版とデモを gh-pages ブランチに公開する。
+#   main への push      → /next/ を置き換える（core や bindings/wasm が変わったときだけ）
+#   リリースの公開       → /vX.Y.Z/ を作り、最新の安定版なら /latest/ も置き換える
+# gh-pages の履歴は使い捨てで、公開のたびに 1 コミットに作り直して force push する
+# （詳しくは .github/scripts/publish-pages.sh）。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/**"
+      - "bindings/wasm/**"
+      - "!bindings/wasm/test/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "LICENSE-*"
+      - "NOTICE"
+      - ".github/workflows/pages.yml"
+      - ".github/scripts/**"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# gh-pages への書き込みは 1 つずつ。待っている実行は取り消さない
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: bindings/wasm/build.sh
+      # テストが通らないものは公開しない
+      - run: npm test
+        working-directory: bindings/wasm
+
+      - name: Decide what to publish
+        id: what
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          if [ "$EVENT" = release ]; then
+            if ! [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::The release tag must look like v1.2.3 or v1.2.3-rc.1, but it is '$TAG'"
+              exit 1
+            fi
+            version="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+            suffix="${BASH_REMATCH[2]}"
+            cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml | sed -n 1p)"
+            if [ "$version" != "$cargo_version" ]; then
+              echo "::error::The tag $TAG does not match the version $cargo_version in core/Cargo.toml"
+              exit 1
+            fi
+            echo "kind=release" >> "$GITHUB_OUTPUT"
+            echo "name=$TAG" >> "$GITHUB_OUTPUT"
+            if [ "$PRERELEASE" = false ] && [ -z "$suffix" ]; then
+              echo "stable=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "stable=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "kind=next" >> "$GITHUB_OUTPUT"
+            echo "name=next" >> "$GITHUB_OUTPUT"
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        env:
+          KIND: ${{ steps.what.outputs.kind }}
+          NAME: ${{ steps.what.outputs.name }}
+          STABLE: ${{ steps.what.outputs.stable }}
+          COMMIT: ${{ github.sha }}
+          REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: .github/scripts/publish-pages.sh

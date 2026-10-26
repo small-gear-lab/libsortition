@@ -40,6 +40,15 @@ cargo test -p sortition                  # core tests
 - PHP: `phpize` may belong to a different PHP than `php` on `PATH`. Run the extension with `$(php-config --php-binary)`. The shims aim at PHP 7.4+, but only 8.4 has been run. `phpize` leaves many files behind (most are ignored); run `phpize --clean` and check `git status` before committing.
 - The demo needs a static file server (it loads a module and the `.wasm`), for example `python3 -m http.server` in `bindings/wasm`.
 
+## Publishing the WebAssembly build
+
+`.github/workflows/pages.yml` publishes `bindings/wasm` and the demo to GitHub Pages (`https://small-gear-lab.github.io/libsortition/`) by pushing to the `gh-pages` branch:
+
+- a push to `main` that touches the core or the WASM binding replaces `/next/`;
+- publishing a GitHub release creates `/vX.Y.Z/` (never changed afterwards) and, for the newest stable version only, replaces `/latest/`. The tag must be `vX.Y.Z` (or `vX.Y.Z-rc.1`) and must equal the version in `core/Cargo.toml`.
+
+Every folder has a `manifest.json` with the SHA-384 of its files. `gh-pages` is an orphan branch that holds only build output. Each run rebuilds it as a single commit and force-pushes it (with `--force-with-lease`), so do not commit to it by hand and do not protect it against force pushes. The logic lives in `.github/scripts/` (`pages.py`, `publish-pages.sh`); you can run `publish-pages.sh` against a local bare repository that has a `gh-pages` branch to try a change (see the comment at the top of the script).
+
 ## Rules that are easy to break
 
 **Keep the five bindings in step.** A feature is not done until it exists in every binding with the same behavior (names follow each language's style), has tests, and appears in both READMEs. IDs, fingerprints and the session id are lowercase hex strings. A pick is `index` (position in the list you passed) plus `id`.
