@@ -1,7 +1,7 @@
 {
   "name": "libsortition",
   "version": "0.1.0",
-  "description": "libsortition の Node.js バインディング（N-API ネイティブアドオン）",
+  "description": "Node.js native addon for libsortition (experimental; builds on Linux and macOS only). Most users should use libsortition-wasm instead.",
   "main": "index.js",
   "types": "index.d.ts",
   "gypfile": true,
@@ -9,7 +9,17 @@
     "build": "node-gyp rebuild",
     "test": "node --test test/*.test.js"
   },
-  "engines": { "node": ">=22" },
-  "devDependencies": { "node-gyp": "^13.1.0" },
-  "license": "MIT OR Apache-2.0"
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "node-gyp": "^13.1.0"
+  },
+  "license": "MIT OR Apache-2.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/small-gear-lab/libsortition.git",
+    "directory": "bindings/node"
+  }
 }

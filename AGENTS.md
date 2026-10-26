@@ -56,6 +56,10 @@ cargo test -p sortition                  # core tests
 
 Every folder has a `manifest.json` with the SHA-384 of its files. `gh-pages` is an orphan branch that holds only build output. Each run rebuilds it as a single commit and force-pushes it (with `--force-with-lease`), so do not commit to it by hand and do not protect it against force pushes. The logic lives in `.github/scripts/` (`pages.py`, `publish-pages.sh`); you can run `publish-pages.sh` against a local bare repository that has a `gh-pages` branch to try a change (see the comment at the top of the script).
 
+## Publishing the npm package
+
+`libsortition-wasm` is published from `bindings/wasm` (`npm publish` after `bindings/wasm/build.sh`). npm leaves symbolic links out of a package, so `scripts/pack.mjs` (the `prepack` and `postpack` scripts) copies the license files and `NOTICE` from the root into the package and removes them afterwards, and stops the publish when `sortition.wasm` has not been built. Check what goes in with `npm pack --dry-run`. The Node.js native addon in `bindings/node` is `private`: it cannot be installed from npm, because it links against a library built from the repository.
+
 ## Rules that are easy to break
 
 **Keep the five bindings in step.** A feature is not done until it exists in every binding with the same behavior (names follow each language's style), has tests, and appears in both READMEs. IDs, fingerprints and the session id are lowercase hex strings. A pick is `index` (position in the list you passed) plus `id`.

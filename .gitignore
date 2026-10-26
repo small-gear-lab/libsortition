@@ -27,3 +27,8 @@ bindings/wasm/sortition.wasm
 # examples/c
 examples/c/demo
 examples/c/demo-cpp
+
+# copied in by npm pack / publish (bindings/wasm/scripts/pack.mjs)
+bindings/wasm/LICENSE-MIT
+bindings/wasm/LICENSE-APACHE
+bindings/wasm/NOTICE
