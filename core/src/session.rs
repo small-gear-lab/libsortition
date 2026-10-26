@@ -317,7 +317,7 @@ impl Session {
                 || key.len() > MAX_KEY_LEN
                 || count == 0
                 || start < end
-                || stop.map_or(true, |s| s > d)
+                || !matches!(stop, Some(s) if s <= d)
                 || calls.iter().any(|p| p.key == key)
             {
                 return Err(bad("invalid calls"));
@@ -937,7 +937,7 @@ mod tests {
 
             let (mut a, mut b) = ([0u32; 4], [0u32; 4]);
             let mut replayed = -1i32;
-            let key = b"req-1\0".as_ptr() as *const c_char;
+            let key = c"req-1".as_ptr();
             assert_eq!(sortition_session_draw_keyed(s, 4, key, a.as_mut_ptr(), &mut replayed), SORTITION_OK);
             assert_eq!(replayed, 0);
             assert_eq!(sortition_session_revision(s), 1);
@@ -950,9 +950,9 @@ mod tests {
             assert_eq!(sortition_session_draw_keyed(s, 4, std::ptr::null(), b.as_mut_ptr(), std::ptr::null_mut()), SORTITION_OK);
             assert_eq!(sortition_session_revision(s), 2);
             // UTF-8 でないキー、空のキー
-            let bad_utf8 = b"\xff\0".as_ptr() as *const c_char;
+            let bad_utf8 = c"\xff".as_ptr();
             assert_eq!(sortition_session_draw_keyed(s, 1, bad_utf8, b.as_mut_ptr(), &mut replayed), SORTITION_ERR_UTF8);
-            let empty = b"\0".as_ptr() as *const c_char;
+            let empty = c"".as_ptr();
             assert_eq!(sortition_session_draw_keyed(s, 1, empty, b.as_mut_ptr(), &mut replayed), SORTITION_ERR_INVALID);
             assert_eq!(sortition_session_revision(std::ptr::null()), 0);
             sortition_session_free(s);
