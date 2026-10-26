@@ -23,9 +23,9 @@
 | パス | 内容 |
 |---|---|
 | `core/` | Rust のクレート（`cdylib` と `rlib`）と C ヘッダ |
+| `cli/` | `sortition` コマンド（リストからの抽選と、記録した抽選の検証） |
 | `bindings/node/` | Node.js（N-API ネイティブアドオン） |
 | `bindings/php/` | PHP 拡張（PHP 8.2 以降） |
-| `cli/` | `sortition` コマンド（リストからの抽選と、記録した抽選の検証） |
 | `bindings/python/` | Python（ctypes、依存なし） |
 | `bindings/ruby/` | Ruby（Fiddle、標準ライブラリのみ） |
 | `bindings/wasm/` | ブラウザと Node 向けの WebAssembly（依存なし）とデモ |
