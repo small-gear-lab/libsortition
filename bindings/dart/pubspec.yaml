@@ -1,0 +1,15 @@
+name: sortition
+description: Fair, repeatable and verifiable random lotteries (k of n without replacement), with seeds you can commit to, prize stages, and sessions you can save and continue. Binds the libsortition core through dart:ffi.
+version: 0.1.0
+repository: https://github.com/small-gear-lab/libsortition
+publish_to: none # until the first release is on pub.dev
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  ffi: ^2.2.0
+
+dev_dependencies:
+  lints: ^6.1.0
+  test: ^1.33.0

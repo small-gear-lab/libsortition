@@ -225,6 +225,27 @@ jobs:
           lib="$PWD/target/release"
           swift test -Xswiftc -warnings-as-errors -Xlinker -L"$lib" -Xlinker -rpath -Xlinker "$lib"
 
+  dart:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - uses: actions/download-artifact@v8
+        with:
+          name: libsortition-linux
+          path: target/release
+      - run: dart pub get
+        working-directory: bindings/dart
+      - run: dart format --output=none --set-exit-if-changed .
+        working-directory: bindings/dart
+      - run: dart analyze --fatal-infos
+        working-directory: bindings/dart
+      - run: dart test
+        working-directory: bindings/dart
+
   java:
     needs: core
     runs-on: ubuntu-latest

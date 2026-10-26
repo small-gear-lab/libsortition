@@ -45,3 +45,7 @@ bindings/java/build/
 # SwiftPM build output
 .build/
 .swiftpm/
+
+# Dart
+bindings/dart/.dart_tool/
+bindings/dart/pubspec.lock

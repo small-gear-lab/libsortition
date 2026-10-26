@@ -82,6 +82,7 @@ bindings/wasm/build.sh                        # WebAssembly のビルド。事�
 | `core/` | Rust のクレート（`cdylib` と `rlib`）と C ヘッダ |
 | `cli/` | `sortition` コマンド（リストからの抽選と、記録した抽選の検証） |
 | `bindings/dotnet/` | .NET: C#、F#、VB.NET（P/Invoke、.NET 10） |
+| `bindings/dart/` | Dart（`dart:ffi`。Dart VM と、デスクトップの Flutter） |
 | `bindings/go/` | Go（WebAssembly を wazero で動かす。cgo なし） |
 | `bindings/java/` | Java 25（Foreign Function & Memory API。Kotlin からも使える） |
 | `bindings/node/` | Node.js（N-API ネイティブアドオン） |
