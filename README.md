@@ -12,6 +12,7 @@ A small library for unbiased random lotteries: it picks `k` of `n` candidates wi
 - **Reproducible when you want it.** With no seed the OS random source is used; with a seed (a `u64`) the same seed gives the same result.
 - **Candidates from text or data.** One candidate per line of text (surrounding spaces are trimmed, empty lines are dropped), or an array inside JSON, YAML or TOML (`path` such as `a.b.0` says where the array is). YAML aliases, custom tags and multiple documents are rejected.
 - **Sessions: keep drawing where you left off.** A session holds `0..n` and draws without replacement each time you call it. Its state can be saved as JSON and restored later, so the draw can continue from a database or a file. With a seed, drawing in several steps gives the same order as one big `draw(n, k1 + k2 + ..., seed)`. A saved state that is malformed or inconsistent is rejected.
+- **Resume after a reload or an expired HTTP session, with no server.** Draws use a cryptographic random stream (ChaCha20) whose state is saved with the session, so the same saved state always gives the same next draw. Every draw can carry an idempotency key, so a retried request returns the previous result instead of drawing twice. In the browser, `persist.js` keeps sessions in IndexedDB; with a server, `seal()` turns a state into a tamper-proof token (XChaCha20-Poly1305) that is safe to hand to the browser.
 - **Any bytes as candidates, identified by stable IDs.** Pass arbitrary byte strings and each one gets a unique ID that does not depend on its position: `SHA-256(prefix ‖ bytes ‖ occurrence)`, where the occurrence number tells identical byte strings apart. Candidates are sorted by ID before drawing, so the same candidate set and seed give the same winners whatever the input order. A set fingerprint (a hash of the sorted IDs) can be published before the draw and checked afterwards. Item sessions save the drawn IDs and the fingerprint, and can only be resumed with the same candidate set (in any order).
 - **A C ABI.** The header is [core/include/sortition.h](core/include/sortition.h): `sortition_draw`, `sortition_draw_text`, `sortition_draw_data`, `sortition_session_*`, `sortition_item_*`, `sortition_items_draw`, `sortition_free`, `sortition_last_error`, `sortition_version`.
 
@@ -65,6 +66,41 @@ sortition.ItemSession.load(state, reversed(people)).draw(1)   # same set, any or
 Byte-string candidates are in every binding too: `draw_items` / `ItemSession` (Python), `Sortition.draw_items` / `Sortition::ItemSession` (Ruby), `drawItems` / `createItemSession` / `loadItemSession` (Node.js and WebAssembly), and `sortition_draw_items` / `SortitionItemSession` (PHP). IDs and fingerprints are lowercase hex strings, and a pick is `index` (the position in the list you passed) plus `id`.
 
 Sessions are in every binding: `Session` (Python), `Sortition::Session` (Ruby), `createSession` / `loadSession` (Node.js and WebAssembly), and `SortitionSession` (PHP).
+
+### Resuming after a reload or an expired HTTP session
+
+**Without a server** (a static page with WebAssembly): `bindings/wasm/persist.js` saves a session to IndexedDB (or `localStorage`, or memory) every time you draw.
+
+```js
+import { load } from "./sortition.js";
+import { createPersistence } from "./persist.js";
+
+const lots = createPersistence(await load());
+const lot = await lots.createItems(["alice", "bob", "carol"], { seed: 42n });
+await lot.draw(1);
+
+// ... the page is reloaded, or the tab is closed and opened again ...
+const again = await lots.resume(lot.id);   // null if nothing is saved under that id
+await again.draw(1);                       // continues where it stopped, never repeats a winner
+```
+
+- Each `draw` carries an idempotency key (made automatically unless you pass `{ key }`), so retrying after a failed save does not draw twice. The same key with a different `k` is an error (code `-9`).
+- A save only succeeds if the stored `revision` is the one that was read, and Web Locks keeps tabs from drawing at the same time. A tab with an old copy re-reads the stored state and continues from there.
+- `export()` / `import()` move a session to another device as text. It contains the random generator's state, so keep it to yourself.
+- `demo/index.html` uses this: after the main draw it can draw substitutes one at a time (for people who decline), and a reload restores everything.
+
+**With a server** (for example a function on Workers or Lambda that keeps no database): a saved state includes the random generator's state, so whoever holds it can predict later winners and can forge a state. Keep the state out of the browser's hands by sealing it. The key stays on the server.
+
+```python
+key = bytes.fromhex(os.environ["SORTITION_KEY"])   # 32 random bytes, kept on the server
+lot = sortition.Session.unseal(token, key)         # SortitionError (-8) if forged, altered or the wrong key
+picks = lot.draw(3, key=request_id)                # a retried request returns the same picks
+new_token = lot.seal(key)                          # send picks and new_token back to the browser
+```
+
+Because the next draw is a function of the saved state, sending an old token again gives the same result, and the idempotency key covers a token that has already advanced. A server that stores sessions can also compare `revision` before it overwrites a record. The idea is the same in every binding (`seal` / `unseal` / `sealKeyId`).
+
+Nothing here stops an organizer from throwing the result away and starting a new session. Publish the session `id`, the set fingerprint and the seed commitment before the draw.
 
 ```sh
 cd bindings/node && npm install && npm run build && npm test   # Node.js
