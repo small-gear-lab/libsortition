@@ -86,6 +86,37 @@ class SortitionTest < Minitest::Test
     assert_raises(ArgumentError) { a.seal(nil) }
   end
 
+  def test_seed_follows_the_core_rule
+    # printf sortition | sha256sum の先頭 8 バイトをリトルエンディアンで読んだ値（全バインディング共通）
+    assert_equal 131_367_258_856_992_384, S.seed_from_text("sortition")
+    assert_equal "80ae496fd3b5d201bb96339356ff252e2b1cdc214ad567f6ebe8de4537e6b31c", S.seed_commit("sortition")
+    assert_equal 0x141cfc9842c4b0e3, S.seed_from_text("")
+    assert_equal S.seed_from_text("日本語"), S.seed_from_text("日本語".b)
+    refute_equal S.seed_from_text("a"), S.seed_from_text("b")
+    assert_equal 3, S.draw(10, 3, seed: S.seed_from_text("abc")).size
+  end
+
+  def test_stages_cut_one_draw_in_order
+    plan = [["副賞", 3], ["大賞", 1]]
+    seed = S.seed_from_text("stages")
+    got = S.draw_stages(NAMES, plan, seed: seed)
+    assert_equal [["副賞", 3, 3], ["大賞", 1, 1]], got.map { |r| [r.name, r.count, r.winners.size] }
+    assert_equal S.draw_items(NAMES, 4, seed: seed), got.flat_map(&:winners)
+    assert_equal 4, got.flat_map(&:winners).map(&:id).uniq.size
+    # 並び順に依らない、Hash でも組でもよい
+    shuffled = S.draw_stages(NAMES.reverse, [{ name: "副賞", count: 3 }, { name: "大賞", count: 1 }], seed: seed)
+    assert_equal got.map { |r| r.winners.map(&:id) }, shuffled.map { |r| r.winners.map(&:id) }
+    assert_equal [], S.draw_stages(NAMES, [])
+    assert_equal [], S.draw_stages(NAMES, [["空", 0]]).first.winners
+  end
+
+  def test_stages_errors
+    assert_raises(S::Error) { S.draw_stages(NAMES, [["多すぎる", 99]]) }
+    assert_raises(ArgumentError) { S.draw_stages(NAMES, [["a", -1]]) }
+    assert_raises(ArgumentError) { S.draw_stages(NAMES, [["a", 1.5]]) }
+    assert_raises(TypeError) { S.draw_stages(NAMES, [[1, 1]]) }
+  end
+
   def test_items
     assert_equal ["3b39139043226007aae3c88c03f4a1867e3cea04126ee893f8b395f7eb97899b"], S.item_ids(["abc"])
     assert_equal 5, S.item_ids(["x", "x", "", "", "\xff\x00".b]).uniq.size

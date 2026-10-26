@@ -79,6 +79,7 @@ module Sortition
   extern "int sortition_item_session_id(void*, void*)"
   extern "int sortition_item_session_seal(void*, void*, unsigned char, void*)"
   extern "int sortition_item_session_unseal(void*, unsigned long, void*, void*, void*, unsigned long, void*)"
+  extern "int sortition_seed_from_text(void*, unsigned long, void*, void*)"
   extern "int sortition_seal_key_id(void*, unsigned long, void*)"
   extern "void sortition_free(void*)"
   extern "const char* sortition_last_error()"
@@ -299,6 +300,27 @@ module Sortition
     private_class_method :finalizer
   end
 
+  # seed の文字列から [seed, SHA-256 のダイジェスト（32 バイトのバイナリ）] をコアの規則で決める。
+  def self.seed_info(text)
+    data = text.b
+    seed = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
+    digest = Fiddle::Pointer.malloc(32, Fiddle::RUBY_FREE)
+    rc = sortition_seed_from_text(data, data.bytesize, seed, digest)
+    raise Error.new(rc) unless rc.zero?
+
+    [seed[0, 8].unpack1("Q"), digest[0, 32]]
+  end
+
+  # seed の文字列（String。バイト列としてそのまま）から seed（0 以上の Integer）を決める。
+  #
+  # seed は、文字列の SHA-256 の先頭 8 バイトをリトルエンディアンで読んだ値。
+  # 抽選の前にコミット値（seed_commit）だけを公開しておき、直前に文字列を明かすと、
+  # あとから seed を選び直していないことを示せる。
+  def self.seed_from_text(text) = seed_info(text).first
+
+  # seed の文字列の SHA-256（小文字 16 進 64 文字）。抽選の前に公開するコミット値。
+  def self.seed_commit(text) = seed_info(text).last.unpack1("H*")
+
   # 当選した候補。index は渡した items の中の位置、id は候補の ID（小文字 16 進 64 文字）。
   Pick = Struct.new(:index, :id)
 
@@ -358,6 +380,32 @@ module Sortition
     raise Error.new(rc) unless rc.zero?
 
     read_picks(indexes, ids, k)
+  end
+
+  # 賞ごとの結果。winners は Pick の Array。
+  StageResult = Struct.new(:name, :count, :winners)
+
+  def self.stage_spec(spec, i)
+    name, count = spec.is_a?(Hash) ? spec.values_at(:name, :count) : spec
+    raise TypeError, "stages[#{i}] name must be a String" unless name.is_a?(String)
+    raise ArgumentError, "stages[#{i}] count must be a non-negative Integer" unless count.is_a?(Integer) && count >= 0
+
+    [name, count]
+  end
+
+  # 賞ごとに順番に抽選する（重複当選なし）。Array<StageResult> を返す。
+  #
+  # items は候補（String）。stages は引く順の賞で、{ name:, count: } か [名前, 人数] の組。
+  # 合計人数を draw_items で一度に引いて、先頭から賞ごとに切り分ける（「1 つ目の賞を引き、
+  # 残りから次の賞を引く」と同じ確率）。候補は ID の昇順に並べてから引くので、同じ候補集合と
+  # シードなら、items の並びが違っても同じ候補が当選する。合計人数が候補数を超えれば Sortition::Error。
+  def self.draw_stages(items, stages, seed: nil)
+    plan = stages.each_with_index.map { |spec, i| stage_spec(spec, i) }
+    picks = draw_items(items, plan.sum { |_, count| count }, seed: seed)
+    at = 0
+    plan.map do |name, count|
+      StageResult.new(name, count, picks[at, count]).tap { at += count }
+    end
   end
 
   # 候補集合を固定した抽選セッション（保存・復元つき）。
