@@ -59,6 +59,22 @@ jobs:
           path: target/release/libsortition.so
           if-no-files-found: error
 
+  # Linux 以外でも、core と CLI が動くこと（リリースでは macOS と Windows のバイナリも作る）。
+  # 初めて動かすので、通るのを確かめるまでは結果を見るだけにして、失敗してもワークフローは落とさない
+  portable:
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p sortition -p sortition-cli
+      - run: cargo build --release --locked -p sortition -p sortition-cli
+
   # core/Cargo.toml の rust-version（最小の Rust）でビルドして、テストが通ること。
   # 依存は、その Rust で動く版を選ぶ解決（fallback）で入れ直す（コミットしてある Cargo.lock は最新の版を使う）
   msrv:
