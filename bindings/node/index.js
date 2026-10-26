@@ -5,6 +5,9 @@
 //   s.draw(10, 3, { seed: 1n });                 // [7, 2, 6]
 //   s.drawText("alice\nbob\ncarol", 2);          // ["bob", "alice"]
 //   s.drawData("- {id: 1}\n- {id: 2}", 1, { format: "yaml" });
+//   const lot = s.createSession(100, { seed: 1n }); // 続きから引ける抽選セッション
+//   lot.draw(3); const saved = lot.save();         // 保存して…
+//   s.loadSession(saved).draw(2);                  // …あとで続きから引く
 //   s.drawStages(["a", "b", "c", "d"], [{ name: "副賞", count: 3 }, { name: "大賞", count: 1 }]);
 const crypto = require('node:crypto');
 const native = require('./build/Release/sortition_node.node');
@@ -63,6 +66,57 @@ function drawData(text, k, { format, path = '', seed } = {}) {
 }
 
 /**
+ * 抽選セッション。0..n-1 から呼ぶたびに続きから非復元抽出する。
+ * save() で状態を JSON 文字列にでき、loadSession() で復元して続きから引ける。
+ * seed 指定ありなら、何回に分けて引いても draw(n, k1 + k2 + ..., { seed }) と同じ並びになる。
+ * close() し忘れても GC で解放される。
+ */
+class Session {
+  #handle;
+
+  constructor(handle) {
+    this.#handle = handle;
+  }
+
+  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
+  draw(k) {
+    u32(k, 'k');
+    return call(() => native.sessionDraw(this.#handle, k));
+  }
+
+  /** まだ引いていない数 */
+  get remaining() {
+    return native.sessionRemaining(this.#handle);
+  }
+
+  /** ここまでに引いた数 */
+  get drawnCount() {
+    return native.sessionDrawnCount(this.#handle);
+  }
+
+  /** 状態を JSON 文字列で返す。引いた結果（"drawn"）も含む */
+  save() {
+    return call(() => native.sessionSave(this.#handle));
+  }
+
+  /** コア側のセッションを解放する（以後の利用は Error）。二重に呼んでもよい */
+  close() {
+    native.sessionClose(this.#handle);
+  }
+}
+
+/** 0..n-1 を母集団とする抽選セッションを作る。 */
+function createSession(n, { seed } = {}) {
+  u32(n, 'n');
+  return new Session(call(() => native.sessionNew(n, checkSeed(seed))));
+}
+
+/** Session#save() の出力から復元する。不正な状態は SortitionError（code -8）。 */
+function loadSession(state) {
+  return new Session(call(() => native.sessionLoad(String(state))));
+}
+
+/**
  * 賞ごとに順番に抽選する（重複当選なし）。
  * 合計人数を重複なしで引いて、先頭から賞ごとに切り分ける。これは「1 つ目の賞を引き、
  * 残りから次の賞を引く」と同じ確率になる。
@@ -102,7 +156,7 @@ function normalizeCandidates(text) {
 }
 
 module.exports = {
-  draw, drawText, drawData, drawStages, seedFromText, normalizeCandidates,
+  draw, drawText, drawData, drawStages, createSession, loadSession, seedFromText, normalizeCandidates,
   version: () => native.version(),
   SortitionError,
 };

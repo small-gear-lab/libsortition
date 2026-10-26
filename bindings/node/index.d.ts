@@ -28,6 +28,27 @@ export interface StageResult<T> {
   winners: T[];
 }
 
+export class Session {
+  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
+  draw(k: number): number[];
+  /** まだ引いていない数 */
+  readonly remaining: number;
+  /** ここまでに引いた数 */
+  readonly drawnCount: number;
+  /** 状態を JSON 文字列で返す。引いた結果（"drawn"）も含む */
+  save(): string;
+  /** コア側のセッションを解放する（以後の利用は Error）。二重に呼んでもよい */
+  close(): void;
+}
+
+/**
+ * 0..n-1 を母集団に、呼ぶたびに続きから非復元抽出するセッションを作る。
+ * seed 指定ありなら、何回に分けて引いても draw(n, k1 + k2 + ..., { seed }) と同じ並びになる
+ */
+export function createSession(n: number, options?: DrawOptions): Session;
+/** Session#save() の出力から復元する。不正な状態は SortitionError（code -8） */
+export function loadSession(state: string): Session;
+
 /** 0..n-1 から k 個を重複なしで抽選する（選ばれた順） */
 export function draw(n: number, k: number, options?: DrawOptions): number[];
 /** 1 行 1 候補のテキストから k 個を抽選する（前後の空白を除き、空行は捨てる） */

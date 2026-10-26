@@ -133,3 +133,40 @@ test('大きな入力のエラー経路を繰り返しても RSS が増えない
   }, { warmup: 20, measure: 100 });
   assert.ok(grew < 15 * MiB, `RSS grew by ${(grew / MiB).toFixed(1)} MiB`);
 });
+
+test('session: 分けて引いても一括と同じ並びで、保存・復元して続きから引ける', () => {
+  const a = s.createSession(200, { seed: 9n });
+  const got = a.draw(20);
+  const saved = a.save();
+  a.close();
+  const b = s.loadSession(saved);
+  got.push(...b.draw(30));
+  assert.deepEqual(got, s.draw(200, 50, { seed: 9n }));
+  assert.equal(b.remaining, 150);
+  assert.equal(b.drawnCount, 50);
+  assert.deepEqual(JSON.parse(b.save()).drawn, got);
+  b.close();
+});
+
+test('session: 乱数源でも使い切ると重複なしで全件が出る', () => {
+  const a = s.createSession(30);
+  const all = [...a.draw(10), ...a.draw(20)];
+  assert.deepEqual([...all].sort((x, y) => x - y), Array.from({ length: 30 }, (_, i) => i));
+  assert.equal(a.remaining, 0);
+  a.close();
+});
+
+test('session: エラー（超過・不正な状態・閉じた後）', () => {
+  const a = s.createSession(5, { seed: 1 });
+  a.draw(3);
+  const before = a.save();
+  assert.throws(() => a.draw(3), (e) => e instanceof s.SortitionError && e.code === -1);
+  assert.equal(a.save(), before); // 失敗しても状態は変わらない
+  assert.throws(() => s.loadSession('{}'), (e) => e instanceof s.SortitionError && e.code === -8);
+  assert.throws(() => s.loadSession('not json'), (e) => e.code === -8);
+  a.close();
+  a.close(); // 二重 close は無害
+  assert.throws(() => a.draw(1), /closed/);
+  assert.throws(() => a.remaining, /closed/);
+  assert.throws(() => s.createSession(-1), RangeError);
+});

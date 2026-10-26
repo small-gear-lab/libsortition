@@ -81,6 +81,7 @@ static const char *default_message(int64_t rc) {
     case SORTITION_ERR_PATH: return "path not found or not an array";
     case SORTITION_ERR_FORMAT: return "unsupported format";
     case SORTITION_ERR_INTERNAL: return "internal error";
+    case SORTITION_ERR_STATE: return "invalid session state";
     default: return "sortition error";
   }
 }
@@ -172,6 +173,141 @@ static napi_value js_draw_data(napi_env env, napi_callback_info info) {
   return result;
 }
 
+// ---- 抽選セッション ----
+// JS 側には napi_external として渡す。close() 済みなら s が NULL になり、以後の利用は例外。
+// 閉じ忘れは external の finalizer（GC）で解放する。
+typedef struct { sortition_session *s; } session_box;
+
+static void session_finalize(napi_env env, void *data, void *hint) {
+  (void)env; (void)hint;
+  session_box *box = data;
+  if (box->s) sortition_session_free(box->s);
+  free(box);
+}
+
+static napi_value wrap_session(napi_env env, sortition_session *s) {
+  session_box *box = malloc(sizeof *box);
+  if (!box) { sortition_session_free(s); napi_throw_error(env, NULL, "out of memory"); return NULL; }
+  box->s = s;
+  napi_value ext;
+  if (napi_create_external(env, box, session_finalize, NULL, &ext) != napi_ok) {
+    sortition_session_free(s);
+    free(box);
+    return throw_napi(env);
+  }
+  return ext;
+}
+
+// external から開いているセッションを取り出す。閉じていれば例外を投げて NULL
+static session_box *get_box(napi_env env, napi_value v) {
+  void *data = NULL;
+  if (napi_get_value_external(env, v, &data) != napi_ok) { throw_napi(env); return NULL; }
+  session_box *box = data;
+  if (!box->s) { napi_throw_error(env, NULL, "session is closed"); return NULL; }
+  return box;
+}
+
+// sessionNew(n, seed) -> external
+static napi_value js_session_new(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  uint32_t n;
+  CALL(env, napi_get_value_uint32(env, argv[0], &n));
+  uint64_t seed;
+  const uint64_t *seed_ptr;
+  if (!get_seed(env, argv[1], &seed, &seed_ptr)) return NULL;
+  sortition_session *s = NULL;
+  int32_t rc = sortition_session_new(n, seed_ptr, &s);
+  if (rc != SORTITION_OK) return throw_code(env, rc, default_message(rc));
+  return wrap_session(env, s);
+}
+
+// sessionLoad(state) -> external
+static napi_value js_session_load(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  size_t len;
+  char *text = get_utf8(env, argv[0], &len);
+  if (!text) return NULL;
+  sortition_session *s = NULL;
+  int32_t rc = sortition_session_load((const uint8_t *)text, len, &s);
+  free(text);
+  if (rc != SORTITION_OK) return throw_code(env, rc, sortition_last_error());
+  return wrap_session(env, s);
+}
+
+// sessionDraw(session, k) -> number[]
+static napi_value js_session_draw(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  session_box *box = get_box(env, argv[0]);
+  if (!box) return NULL;
+  uint32_t k;
+  CALL(env, napi_get_value_uint32(env, argv[1], &k));
+
+  uint32_t *out = malloc(sizeof(uint32_t) * (k ? k : 1));
+  if (!out) { napi_throw_error(env, NULL, "out of memory"); return NULL; }
+  int32_t rc = sortition_session_draw(box->s, k, out);
+  if (rc != SORTITION_OK) { free(out); return throw_code(env, rc, default_message(rc)); }
+
+  napi_value arr, item;
+  if (napi_create_array_with_length(env, k, &arr) != napi_ok) { free(out); return throw_napi(env); }
+  for (uint32_t i = 0; i < k; i++) {
+    if (napi_create_uint32(env, out[i], &item) != napi_ok || napi_set_element(env, arr, i, item) != napi_ok) {
+      free(out);
+      return throw_napi(env);
+    }
+  }
+  free(out);
+  return arr;
+}
+
+// sessionRemaining(session) / sessionDrawnCount(session) -> number
+static napi_value session_count(napi_env env, napi_callback_info info, int remaining) {
+  size_t argc = 1;
+  napi_value argv[1], result;
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  session_box *box = get_box(env, argv[0]);
+  if (!box) return NULL;
+  uint32_t v = remaining ? sortition_session_remaining(box->s) : sortition_session_drawn_count(box->s);
+  CALL(env, napi_create_uint32(env, v, &result));
+  return result;
+}
+static napi_value js_session_remaining(napi_env env, napi_callback_info info) { return session_count(env, info, 1); }
+static napi_value js_session_drawn_count(napi_env env, napi_callback_info info) { return session_count(env, info, 0); }
+
+// sessionSave(session) -> string（JSON）
+static napi_value js_session_save(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  session_box *box = get_box(env, argv[0]);
+  if (!box) return NULL;
+  char *json = NULL;
+  int32_t rc = sortition_session_save(box->s, &json);
+  if (rc != SORTITION_OK) return throw_code(env, rc, sortition_last_error());
+  napi_value result;
+  napi_status st = napi_create_string_utf8(env, json, NAPI_AUTO_LENGTH, &result);
+  sortition_free(json);
+  if (st != napi_ok) return throw_napi(env);
+  return result;
+}
+
+// sessionClose(session) -> undefined（二重に呼んでもよい）
+static napi_value js_session_close(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  void *data = NULL;
+  CALL(env, napi_get_value_external(env, argv[0], &data));
+  session_box *box = data;
+  if (box->s) { sortition_session_free(box->s); box->s = NULL; }
+  return NULL;
+}
+
 static napi_value js_version(napi_env env, napi_callback_info info) {
   (void)info;
   napi_value result;
@@ -182,6 +318,9 @@ static napi_value js_version(napi_env env, napi_callback_info info) {
 static napi_value init(napi_env env, napi_value exports) {
   const struct { const char *name; napi_callback fn; } fns[] = {
     {"draw", js_draw}, {"drawText", js_draw_text}, {"drawData", js_draw_data}, {"version", js_version},
+    {"sessionNew", js_session_new}, {"sessionLoad", js_session_load}, {"sessionDraw", js_session_draw},
+    {"sessionRemaining", js_session_remaining}, {"sessionDrawnCount", js_session_drawn_count},
+    {"sessionSave", js_session_save}, {"sessionClose", js_session_close},
   };
   for (size_t i = 0; i < sizeof(fns) / sizeof(fns[0]); i++) {
     napi_value fn;
