@@ -230,3 +230,66 @@ test('itemSession: 候補が違う・超過・閉じた後・種類違いはエ�
   a.close();
   assert.throws(() => a.draw(1), /closed/);
 });
+
+test('session: 羃等キー（再送は前回と同じ結果、別の k は衝突）と revision / id', () => {
+  const a = s.createSession(50);
+  const first = a.draw(3, { key: 'req-1' });
+  const state = a.save();
+  assert.deepEqual(a.draw(3, { key: 'req-1' }), first);
+  assert.equal(a.save(), state);
+  assert.equal(a.revision, 1);
+  assert.throws(() => a.draw(4, { key: 'req-1' }), (e) => e instanceof s.SortitionError && e.code === -9);
+  assert.throws(() => a.draw(1, { key: '' }), (e) => e.code === -1);
+  assert.throws(() => a.draw(1, { key: 5 }), TypeError);
+  assert.throws(() => a.draw(1, { key: 'a\0b' }), RangeError);
+  assert.match(a.id, /^[0-9a-f]{32}$/);
+  assert.equal(JSON.parse(state).id, a.id);
+  const b = s.createSession(5);
+  const all = b.draw(5, { key: 'all' });
+  assert.deepEqual(b.draw(5, { key: 'all' }), all); // 全部引いたあとでも再送は前回の結果
+  const c = s.createSession(100);
+  c.draw(4, { key: 'a' });
+  const stale = c.save();
+  const want = c.draw(6, { key: 'b' });
+  const old = s.loadSession(stale);
+  assert.deepEqual(old.draw(6, { key: 'b' }), want); // 古い状態への再送は同じ結果・同じ状態
+  assert.equal(old.save(), c.save());
+});
+
+test('seal: 封をして預け、鍵がなければ開けず、改ざんも検知する', () => {
+  const key = Buffer.alloc(32, 7);
+  const a = s.createSession(50);
+  a.draw(3, { key: 'r' });
+  const token = a.seal(key, 9);
+  assert.ok(token.startsWith('sortition1.'));
+  assert.equal(s.sealKeyId(token), 9);
+  assert.ok(!token.includes(JSON.parse(a.save()).rng.key));
+  const b = s.unsealSession(token, key);
+  assert.equal(b.save(), a.save());
+  assert.deepEqual(b.draw(2), a.draw(2));
+  const tampered = token.slice(0, -1) + (token.endsWith('A') ? 'B' : 'A');
+  for (const f of [
+    () => s.unsealSession(token, Buffer.alloc(32, 8)),
+    () => s.unsealSession(tampered, key),
+    () => s.unsealSession('junk', key),
+    () => s.sealKeyId('junk'),
+  ]) assert.throws(f, (e) => e instanceof s.SortitionError && e.code === -8);
+  assert.throws(() => a.seal(Buffer.alloc(31)), RangeError);
+  assert.throws(() => a.seal(key, 256), RangeError);
+  assert.throws(() => a.seal('x'.repeat(32)), RangeError);
+});
+
+test('itemSession: 羃等キー・revision・id・seal', () => {
+  const key = Buffer.alloc(32, 1);
+  const lot = s.createItemSession(names, { seed: 11n });
+  const got = lot.draw(3, { key: 'k1' });
+  assert.deepEqual(lot.draw(3, { key: 'k1' }), got);
+  assert.equal(lot.revision, 1);
+  assert.match(lot.id, /^[0-9a-f]{32}$/);
+  const token = lot.seal(key, 1);
+  const shuffled = [...names.slice(2), ...names.slice(0, 2)];
+  const again = s.unsealItemSession(token, key, shuffled);
+  assert.deepEqual(idsOf(again.draw(5)), idsOf(lot.draw(5)));
+  assert.throws(() => s.unsealItemSession(token, key, names.slice(1)), (e) => e.code === -8);
+  assert.throws(() => s.unsealSession(token, key), (e) => e.code === -8); // 数値のセッションとしては開けない
+});

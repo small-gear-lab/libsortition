@@ -37,6 +37,28 @@ function checkSeed(seed) {
   throw new TypeError('seed must be a bigint, a safe integer, null or undefined');
 }
 
+/** 羃等キー（string、1〜128 バイト）。undefined / null ならキーなし */
+function idemKey(key) {
+  if (key === undefined || key === null) return undefined;
+  if (typeof key !== 'string') throw new TypeError('key must be a string, null or undefined');
+  if (key.includes('\0')) throw new RangeError('key must not contain NUL');
+  return key;
+}
+
+/** 封をする鍵（ちょうど 32 バイトの Buffer / Uint8Array / ArrayBuffer）を Uint8Array にする */
+function secretKey(key) {
+  let bytes = null;
+  if (ArrayBuffer.isView(key)) bytes = new Uint8Array(key.buffer, key.byteOffset, key.byteLength);
+  else if (key instanceof ArrayBuffer) bytes = new Uint8Array(key);
+  if (!bytes || bytes.length !== 32) throw new RangeError('key must be exactly 32 bytes');
+  return bytes;
+}
+
+function keyIdArg(keyId) {
+  if (!Number.isInteger(keyId) || keyId < 0 || keyId > 255) throw new RangeError('keyId must be an integer in 0..255');
+  return keyId;
+}
+
 /** ネイティブ層の例外（sortitionCode 付き）を SortitionError に変える */
 function call(fn) {
   try {
@@ -79,10 +101,32 @@ class Session {
     this.#handle = handle;
   }
 
-  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
-  draw(k) {
+  /**
+   * 続きから k 個引く。残りを超えると SortitionError（状態は変わらない）。
+   * key（羃等キー、string、1〜128 バイト）を付けると、同じ key と同じ k の再送は、状態を変えずに
+   * 前回と同じ結果を返す。同じ key で別の k は SortitionError（code -9）。
+   */
+  draw(k, { key } = {}) {
     u32(k, 'k');
-    return call(() => native.sessionDraw(this.#handle, k));
+    return call(() => native.sessionDraw(this.#handle, k, idemKey(key)));
+  }
+
+  /** 状態を変えた draw の回数。保存側が「読んだ revision のときだけ更新する」ために使える */
+  get revision() {
+    return native.sessionRevision(this.#handle);
+  }
+
+  /** セッションの識別子（小文字 16 進 32 文字）。作成時に OS から取った値 */
+  get id() {
+    return native.sessionId(this.#handle);
+  }
+
+  /**
+   * 状態に封をしたトークン（string）を返す。乱数の内部状態を相手に見せずに預けられる。
+   * key は 32 バイトの秘密鍵、keyId は鍵の入れ替え用の目印（0〜255）。
+   */
+  seal(key, keyId = 0) {
+    return call(() => native.sessionSeal(this.#handle, secretKey(key), keyIdArg(keyId)));
   }
 
   /** まだ引いていない数 */
@@ -169,10 +213,25 @@ class ItemSession {
     this.#handle = handle;
   }
 
-  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
-  draw(k) {
+  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない）。key（羃等キー）は Session#draw と同じ */
+  draw(k, { key } = {}) {
     u32(k, 'k');
-    return picks(call(() => native.itemSessionDraw(this.#handle, k)));
+    return picks(call(() => native.itemSessionDraw(this.#handle, k, idemKey(key))));
+  }
+
+  /** 状態を変えた draw の回数 */
+  get revision() {
+    return native.itemSessionRevision(this.#handle);
+  }
+
+  /** セッションの識別子（小文字 16 進 32 文字） */
+  get id() {
+    return native.itemSessionId(this.#handle);
+  }
+
+  /** 状態に封をしたトークンを返す。引数と注意は Session#seal と同じ */
+  seal(key, keyId = 0) {
+    return call(() => native.itemSessionSeal(this.#handle, secretKey(key), keyIdArg(keyId)));
   }
 
   get remaining() {
@@ -204,6 +263,22 @@ function createItemSession(items, { seed } = {}) {
 function loadItemSession(state, items) {
   const [data, lens] = packItems(items);
   return new ItemSession(call(() => native.itemSessionLoad(String(state), data, lens)));
+}
+
+/** Session#seal のトークンから復元する。形式の不正・鍵違い・改ざんは SortitionError（code -8）。 */
+function unsealSession(token, key) {
+  return new Session(call(() => native.sessionUnseal(String(token), secretKey(key))));
+}
+
+/** ItemSession#seal のトークンと、同じ候補集合（並びは違ってよい）から復元する。 */
+function unsealItemSession(token, key, items) {
+  const [data, lens] = packItems(items);
+  return new ItemSession(call(() => native.itemSessionUnseal(String(token), secretKey(key), data, lens)));
+}
+
+/** トークンに記された鍵 ID（0〜255）。鍵を入れ替えている場合に、開く前に鍵を選ぶのに使う。 */
+function sealKeyId(token) {
+  return call(() => native.sealKeyId(String(token)));
 }
 
 /**
@@ -247,7 +322,8 @@ function normalizeCandidates(text) {
 
 module.exports = {
   draw, drawText, drawData, drawStages, createSession, loadSession,
-  itemIds, itemFingerprint, drawItems, createItemSession, loadItemSession, seedFromText, normalizeCandidates,
+  itemIds, itemFingerprint, drawItems, createItemSession, loadItemSession,
+  unsealSession, unsealItemSession, sealKeyId, seedFromText, normalizeCandidates,
   version: () => native.version(),
   SortitionError,
 };

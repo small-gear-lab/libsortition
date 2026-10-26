@@ -82,6 +82,7 @@ static const char *default_message(int64_t rc) {
     case SORTITION_ERR_FORMAT: return "unsupported format";
     case SORTITION_ERR_INTERNAL: return "internal error";
     case SORTITION_ERR_STATE: return "invalid session state";
+    case SORTITION_ERR_CONFLICT: return "idempotency key was already used with a different request";
     default: return "sortition error";
   }
 }
@@ -253,19 +254,34 @@ static napi_value js_session_load(napi_env env, napi_callback_info info) {
   return wrap_session(env, s, KIND_NUMBERS);
 }
 
-// sessionDraw(session, k) -> number[]
+// 羃等キー（string、undefined / null ならキーなし）を C 文字列で取り出す。キーなしなら *key は NULL
+// （それ以外は呼び出し側が free する）。成功なら 1
+static int get_key(napi_env env, napi_value v, char **key) {
+  napi_valuetype t;
+  *key = NULL;
+  if (napi_typeof(env, v, &t) != napi_ok) { throw_napi(env); return 0; }
+  if (t == napi_undefined || t == napi_null) return 1;
+  size_t len;
+  *key = get_utf8(env, v, &len);
+  return *key != NULL;
+}
+
+// sessionDraw(session, k, key) -> number[]
 static napi_value js_session_draw(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value argv[2];
+  size_t argc = 3;
+  napi_value argv[3];
   CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
   session_box *box = get_box(env, argv[0], KIND_NUMBERS);
   if (!box) return NULL;
   uint32_t k;
   CALL(env, napi_get_value_uint32(env, argv[1], &k));
+  char *key;
+  if (!get_key(env, argv[2], &key)) return NULL;
 
   uint32_t *out = malloc(sizeof(uint32_t) * (k ? k : 1));
-  if (!out) { napi_throw_error(env, NULL, "out of memory"); return NULL; }
-  int32_t rc = sortition_session_draw(box->s, k, out);
+  if (!out) { free(key); napi_throw_error(env, NULL, "out of memory"); return NULL; }
+  int32_t rc = sortition_session_draw_keyed(box->s, k, key, out, NULL);
+  free(key);
   if (rc != SORTITION_OK) { free(out); return throw_code(env, rc, default_message(rc)); }
 
   napi_value arr, item;
@@ -473,20 +489,140 @@ static napi_value js_item_session_load(napi_env env, napi_callback_info info) {
   return wrap_session(env, s, KIND_ITEMS);
 }
 
-// itemSessionDraw(session, k) -> { indexes, ids }
+// itemSessionDraw(session, k, key) -> { indexes, ids }
 static napi_value js_item_session_draw(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value argv[2];
+  size_t argc = 3;
+  napi_value argv[3];
   CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
   session_box *box = get_box(env, argv[0], KIND_ITEMS);
   if (!box) return NULL;
   uint32_t k;
   CALL(env, napi_get_value_uint32(env, argv[1], &k));
+  char *key;
+  if (!get_key(env, argv[2], &key)) return NULL;
   uint32_t *indexes = malloc(sizeof(uint32_t) * (k ? k : 1));
   uint8_t *ids = malloc(32 * (size_t)k + 1);
-  if (!indexes || !ids) { free(indexes); free(ids); napi_throw_error(env, NULL, "out of memory"); return NULL; }
-  int32_t rc = sortition_item_session_draw(box->s, k, indexes, ids);
+  if (!indexes || !ids) { free(indexes); free(ids); free(key); napi_throw_error(env, NULL, "out of memory"); return NULL; }
+  int32_t rc = sortition_item_session_draw_keyed(box->s, k, key, indexes, ids, NULL);
+  free(key);
   return picks_result(env, rc, indexes, ids, k);
+}
+
+// ---- revision / id / seal（数値のセッションとバイト列のセッションで共通）----
+
+// 封をする鍵（Uint8Array、ちょうど 32 バイト）を取り出す
+static int get_secret(napi_env env, napi_value v, const uint8_t **key) {
+  size_t len;
+  if (!get_bytes(env, v, key, &len)) return 0;
+  if (len != 32) { napi_throw_range_error(env, NULL, "key must be exactly 32 bytes"); return 0; }
+  return 1;
+}
+
+// sessionRevision(session) / itemSessionRevision(session) -> number
+static napi_value session_revision(napi_env env, napi_callback_info info, int kind) {
+  size_t argc = 1;
+  napi_value argv[1], result;
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  session_box *box = get_box(env, argv[0], kind);
+  if (!box) return NULL;
+  uint64_t rev = kind == KIND_ITEMS ? sortition_item_session_revision(box->s) : sortition_session_revision(box->s);
+  CALL(env, napi_create_int64(env, (int64_t)rev, &result));
+  return result;
+}
+static napi_value js_session_revision(napi_env env, napi_callback_info info) { return session_revision(env, info, KIND_NUMBERS); }
+static napi_value js_item_session_revision(napi_env env, napi_callback_info info) { return session_revision(env, info, KIND_ITEMS); }
+
+// sessionId(session) / itemSessionId(session) -> string（小文字 16 進 32 文字）
+static napi_value session_id(napi_env env, napi_callback_info info, int kind) {
+  size_t argc = 1;
+  napi_value argv[1], result;
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  session_box *box = get_box(env, argv[0], kind);
+  if (!box) return NULL;
+  uint8_t buf[33];
+  int32_t rc = kind == KIND_ITEMS ? sortition_item_session_id(box->s, buf) : sortition_session_id(box->s, buf);
+  if (rc != SORTITION_OK) return throw_code(env, rc, default_message(rc));
+  CALL(env, napi_create_string_utf8(env, (const char *)buf, 32, &result));
+  return result;
+}
+static napi_value js_session_id(napi_env env, napi_callback_info info) { return session_id(env, info, KIND_NUMBERS); }
+static napi_value js_item_session_id(napi_env env, napi_callback_info info) { return session_id(env, info, KIND_ITEMS); }
+
+// sessionSeal(session, key, keyId) / itemSessionSeal(session, key, keyId) -> string（トークン）
+static napi_value session_seal(napi_env env, napi_callback_info info, int kind) {
+  size_t argc = 3;
+  napi_value argv[3], result;
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  session_box *box = get_box(env, argv[0], kind);
+  if (!box) return NULL;
+  const uint8_t *key;
+  if (!get_secret(env, argv[1], &key)) return NULL;
+  uint32_t key_id;
+  CALL(env, napi_get_value_uint32(env, argv[2], &key_id));
+  char *token = NULL;
+  int32_t rc = kind == KIND_ITEMS ? sortition_item_session_seal(box->s, key, (uint8_t)key_id, &token)
+                                  : sortition_session_seal(box->s, key, (uint8_t)key_id, &token);
+  if (rc != SORTITION_OK) return throw_code(env, rc, sortition_last_error());
+  napi_status st = napi_create_string_utf8(env, token, NAPI_AUTO_LENGTH, &result);
+  sortition_free(token);
+  if (st != napi_ok) return throw_napi(env);
+  return result;
+}
+static napi_value js_session_seal(napi_env env, napi_callback_info info) { return session_seal(env, info, KIND_NUMBERS); }
+static napi_value js_item_session_seal(napi_env env, napi_callback_info info) { return session_seal(env, info, KIND_ITEMS); }
+
+// sessionUnseal(token, key) -> external
+static napi_value js_session_unseal(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  size_t token_len;
+  char *token = get_utf8(env, argv[0], &token_len);
+  if (!token) return NULL;
+  const uint8_t *key;
+  if (!get_secret(env, argv[1], &key)) { free(token); return NULL; }
+  sortition_session *s = NULL;
+  int32_t rc = sortition_session_unseal((const uint8_t *)token, token_len, key, &s);
+  free(token);
+  if (rc != SORTITION_OK) return throw_code(env, rc, sortition_last_error());
+  return wrap_session(env, s, KIND_NUMBERS);
+}
+
+// itemSessionUnseal(token, key, data, lens) -> external
+static napi_value js_item_session_unseal(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value argv[4];
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  size_t token_len;
+  char *token = get_utf8(env, argv[0], &token_len);
+  if (!token) return NULL;
+  const uint8_t *key;
+  if (!get_secret(env, argv[1], &key)) { free(token); return NULL; }
+  const uint8_t *data; size_t data_len; size_t *lens; size_t count;
+  if (!get_bytes(env, argv[2], &data, &data_len)) { free(token); return NULL; }
+  if (!get_lens(env, argv[3], &lens, &count)) { free(token); return NULL; }
+  sortition_item_session *s = NULL;
+  int32_t rc = sortition_item_session_unseal((const uint8_t *)token, token_len, key, data, lens, count, &s);
+  free(token);
+  free(lens);
+  if (rc != SORTITION_OK) return throw_code(env, rc, sortition_last_error());
+  return wrap_session(env, s, KIND_ITEMS);
+}
+
+// sealKeyId(token) -> number（0〜255）
+static napi_value js_seal_key_id(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1], result;
+  CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  size_t len;
+  char *token = get_utf8(env, argv[0], &len);
+  if (!token) return NULL;
+  uint8_t id = 0;
+  int32_t rc = sortition_seal_key_id((const uint8_t *)token, len, &id);
+  free(token);
+  if (rc != SORTITION_OK) return throw_code(env, rc, sortition_last_error());
+  CALL(env, napi_create_uint32(env, id, &result));
+  return result;
 }
 
 // itemSessionRemaining(session) / itemSessionDrawnCount(session) -> number
@@ -537,6 +673,11 @@ static napi_value init(napi_env env, napi_value exports) {
     {"itemSessionNew", js_item_session_new}, {"itemSessionLoad", js_item_session_load},
     {"itemSessionDraw", js_item_session_draw}, {"itemSessionRemaining", js_item_session_remaining},
     {"itemSessionDrawnCount", js_item_session_drawn_count}, {"itemSessionSave", js_item_session_save},
+    {"sessionRevision", js_session_revision}, {"itemSessionRevision", js_item_session_revision},
+    {"sessionId", js_session_id}, {"itemSessionId", js_item_session_id},
+    {"sessionSeal", js_session_seal}, {"itemSessionSeal", js_item_session_seal},
+    {"sessionUnseal", js_session_unseal}, {"itemSessionUnseal", js_item_session_unseal},
+    {"sealKeyId", js_seal_key_id},
   };
   for (size_t i = 0; i < sizeof(fns) / sizeof(fns[0]); i++) {
     napi_value fn;
