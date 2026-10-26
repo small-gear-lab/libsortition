@@ -28,9 +28,29 @@ export interface StageResult<T> {
   winners: T[];
 }
 
+export interface DrawCallOptions {
+  /**
+   * 羃等キー（1〜128 バイト）。同じ key と同じ k の再送は、状態を変えずに前回と同じ結果を返す。
+   * 同じ key で別の k は SortitionError（code -9）
+   */
+  key?: string | null;
+}
+
+/** 封をする鍵（ちょうど 32 バイト） */
+export type SecretKey = Uint8Array | ArrayBuffer | ArrayBufferView;
+
 export interface Session {
   /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
-  draw(k: number): number[];
+  draw(k: number, options?: DrawCallOptions): number[];
+  /** 状態を変えた draw の回数。保存側が「読んだ revision のときだけ更新する」ために使える */
+  readonly revision: number;
+  /** セッションの識別子（小文字 16 進 32 文字） */
+  readonly id: string;
+  /**
+   * 状態に封をしたトークンを返す。乱数の内部状態を相手に見せずに預けられる。
+   * keyId は鍵の入れ替え用の目印（0〜255）
+   */
+  seal(key: SecretKey, keyId?: number): string;
   /** まだ引いていない数 */
   readonly remaining: number;
   /** ここまでに引いた数 */
@@ -53,7 +73,11 @@ export interface Pick {
 
 export interface ItemSession {
   /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
-  draw(k: number): Pick[];
+  draw(k: number, options?: DrawCallOptions): Pick[];
+  readonly revision: number;
+  readonly id: string;
+  /** 状態に封をしたトークンを返す。引数は Session#seal と同じ */
+  seal(key: SecretKey, keyId?: number): string;
   readonly remaining: number;
   readonly drawnCount: number;
   /** 状態を JSON 文字列で返す。引いた候補の ID（"drawn"）と候補集合の指紋（"fingerprint"）を含む */
@@ -92,6 +116,12 @@ export interface Sortition {
   createItemSession(items: Candidate[], options?: DrawOptions): ItemSession;
   /** save() の出力と同じ候補集合（並びは違ってよい）から復元する。違えば SortitionError（code -8） */
   loadItemSession(state: string, items: Candidate[]): ItemSession;
+  /** Session#seal のトークンから復元する。形式の不正・鍵違い・改ざんは SortitionError（code -8） */
+  unsealSession(token: string, key: SecretKey): Session;
+  /** ItemSession#seal のトークンと、同じ候補集合（並びは違ってよい）から復元する */
+  unsealItemSession(token: string, key: SecretKey, items: Candidate[]): ItemSession;
+  /** トークンに記された鍵 ID。鍵を入れ替えている場合に、開く前に鍵を選ぶのに使う */
+  sealKeyId(token: string): number;
   version(): string;
   /** リニアメモリの現在のサイズ（バイト）。リークの確認用 */
   memoryBytes(): number;

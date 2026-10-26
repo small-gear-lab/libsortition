@@ -22,6 +22,7 @@ const MESSAGES = {
   [-6]: "unsupported format",
   [-7]: "internal error",
   [-8]: "invalid session state",
+  [-9]: "idempotency key was already used with a different request",
 };
 
 /** コアが返したエラー。code に SORTITION_ERR_* の値が入る。 */
@@ -129,6 +130,25 @@ export async function load(source) {
     while (bytes[end] !== 0) end++;
     return decoder.decode(bytes.subarray(ptr, end));
   };
+  /** 羃等キー（string、1〜128 バイト）を NUL 終端でメモリに置く。undefined / null ならキーなし（0） */
+  const putKey = (key) => {
+    if (key === undefined || key === null) return 0;
+    if (typeof key !== "string") throw new TypeError("key must be a string, null or undefined");
+    if (key.includes("\0")) throw new RangeError("key must not contain NUL");
+    return putBytes(encoder.encode(key), 1);
+  };
+  /** 封をする鍵（ちょうど 32 バイトの Uint8Array / TypedArray / ArrayBuffer）をメモリに置く */
+  const putSecret = (key) => {
+    const bytes = ArrayBuffer.isView(key)
+      ? new Uint8Array(key.buffer, key.byteOffset, key.byteLength)
+      : key instanceof ArrayBuffer ? new Uint8Array(key) : null;
+    if (!bytes || bytes.length !== 32) throw new RangeError("key must be exactly 32 bytes");
+    return putBytes(bytes);
+  };
+  const u8 = (value, name) => {
+    if (!Number.isInteger(value) || value < 0 || value > 255) throw new RangeError(`${name} must be an integer in 0..255`);
+    return value;
+  };
   const run = (fn) => {
     try {
       return fn();
@@ -229,16 +249,51 @@ export async function load(source) {
       return handle;
     };
     return {
-      /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
-      draw(k) {
+      /**
+       * 続きから k 個引く。残りを超えると SortitionError（状態は変わらない）。
+       * key（羃等キー、string、1〜128 バイト）を付けると、同じ key と同じ k の再送は、状態を変えずに
+       * 前回と同じ結果を返す。同じ key で別の k は SortitionError（code -9）。
+       */
+      draw(k, { key } = {}) {
         u32(k, "k");
-        return run(() => t.draw(live(), k));
+        return run(() => t.draw(live(), k, putKey(key)));
       },
       get remaining() {
         return t.remaining(live());
       },
       get drawnCount() {
         return t.drawnCount(live());
+      },
+      /** 状態を変えた draw の回数。保存側が「読んだ revision のときだけ更新する」ために使える */
+      get revision() {
+        return Number(t.revision(live()));
+      },
+      /** セッションの識別子（小文字 16 進 32 文字）。作成時に OS から取った値 */
+      get id() {
+        return run(() => {
+          const out = alloc(33);
+          t.id(live(), out);
+          return cString(out);
+        });
+      },
+      /**
+       * 状態に封をしたトークン（string）を返す。乱数の内部状態を相手に見せずに預けられる。
+       * key は 32 バイトの秘密鍵、keyId は鍵の入れ替え用の目印（0〜255）。
+       */
+      seal(key, keyId = 0) {
+        u8(keyId, "keyId");
+        return run(() => {
+          const keyPtr = putSecret(key);
+          const outPtr = alloc(4);
+          const rc = t.seal(live(), keyPtr, keyId, outPtr);
+          if (rc !== 0) throw new SortitionError(rc);
+          const tokenPtr = view().getUint32(outPtr, true);
+          try {
+            return cString(tokenPtr);
+          } finally {
+            e.sortition_free(tokenPtr);
+          }
+        });
       },
       /** 状態を JSON 文字列で返す */
       save() {
@@ -264,18 +319,46 @@ export async function load(source) {
   }
 
   const numberSession = {
-    draw(handle, k) {
+    draw(handle, k, keyPtr) {
       const out = alloc(4 * k);
-      const rc = e.sortition_session_draw(handle, k, out);
+      const rc = e.sortition_session_draw_keyed(handle, k, keyPtr, out, 0);
       if (rc !== 0) throw new SortitionError(rc);
       const dv = view();
       return Array.from({ length: k }, (_, i) => dv.getUint32(out + 4 * i, true));
     },
     remaining: (h) => e.sortition_session_remaining(h),
     drawnCount: (h) => e.sortition_session_drawn_count(h),
+    revision: (h) => e.sortition_session_revision(h),
+    id: (h, out) => e.sortition_session_id(h, out),
+    seal: (h, keyPtr, keyId, outPtr) => e.sortition_session_seal(h, keyPtr, keyId, outPtr),
     save: (h, outPtr) => e.sortition_session_save(h, outPtr),
     free: (h) => e.sortition_session_free(h),
   };
+
+  /** seal() のトークンから復元する。形式の不正・鍵違い・改ざんは SortitionError（code -8） */
+  function unsealSession(token, key) {
+    const tokenBytes = encoder.encode(token);
+    return run(() => {
+      const tokenPtr = putBytes(tokenBytes);
+      const keyPtr = putSecret(key);
+      const outPtr = alloc(4);
+      const rc = e.sortition_session_unseal(tokenPtr, tokenBytes.length, keyPtr, outPtr);
+      if (rc !== 0) throw new SortitionError(rc, cString(e.sortition_last_error()));
+      return wrapSession(view().getUint32(outPtr, true), numberSession);
+    });
+  }
+
+  /** トークンに記された鍵 ID（0〜255）。鍵を入れ替えている場合に、開く前に鍵を選ぶのに使う */
+  function sealKeyId(token) {
+    const tokenBytes = encoder.encode(token);
+    return run(() => {
+      const tokenPtr = putBytes(tokenBytes);
+      const outPtr = alloc(1);
+      const rc = e.sortition_seal_key_id(tokenPtr, tokenBytes.length, outPtr);
+      if (rc !== 0) throw new SortitionError(rc, cString(e.sortition_last_error()));
+      return mem()[outPtr];
+    });
+  }
 
   function createSession(n, { seed } = {}) {
     u32(n, "n");
@@ -375,18 +458,36 @@ export async function load(source) {
   }
 
   const itemSession = {
-    draw(handle, k) {
+    draw(handle, k, keyPtr) {
       const indexes = alloc(4 * k);
       const ids = alloc(32 * k);
-      const rc = e.sortition_item_session_draw(handle, k, indexes, ids);
+      const rc = e.sortition_item_session_draw_keyed(handle, k, keyPtr, indexes, ids, 0);
       if (rc !== 0) throw new SortitionError(rc);
       return readPicks(indexes, ids, k);
     },
     remaining: (h) => e.sortition_item_session_remaining(h),
     drawnCount: (h) => e.sortition_item_session_drawn_count(h),
+    revision: (h) => e.sortition_item_session_revision(h),
+    id: (h, out) => e.sortition_item_session_id(h, out),
+    seal: (h, keyPtr, keyId, outPtr) => e.sortition_item_session_seal(h, keyPtr, keyId, outPtr),
     save: (h, outPtr) => e.sortition_item_session_save(h, outPtr),
     free: (h) => e.sortition_item_session_free(h),
   };
+
+  /** seal() のトークンと、同じ候補集合（並びは違ってよい）から復元する。違えば SortitionError（code -8） */
+  function unsealItemSession(token, key, items) {
+    const tokenBytes = encoder.encode(token);
+    const chunks = toChunks(items);
+    return run(() => {
+      const tokenPtr = putBytes(tokenBytes);
+      const keyPtr = putSecret(key);
+      const { data, lens, count } = putItems(chunks);
+      const outPtr = alloc(4);
+      const rc = e.sortition_item_session_unseal(tokenPtr, tokenBytes.length, keyPtr, data, lens, count, outPtr);
+      if (rc !== 0) throw new SortitionError(rc, cString(e.sortition_last_error()));
+      return wrapSession(view().getUint32(outPtr, true), itemSession);
+    });
+  }
 
   /** 候補集合を固定した抽選セッションを作る */
   function createItemSession(items, { seed } = {}) {
@@ -420,5 +521,6 @@ export async function load(source) {
   const memoryBytes = () => e.memory.buffer.byteLength;
 
   return { draw, drawText, drawData, drawStages, createSession, loadSession,
-    itemIds, itemFingerprint, drawItems, createItemSession, loadItemSession, version, memoryBytes };
+    itemIds, itemFingerprint, drawItems, createItemSession, loadItemSession,
+    unsealSession, unsealItemSession, sealKeyId, version, memoryBytes };
 }
