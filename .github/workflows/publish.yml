@@ -141,5 +141,5 @@ jobs:
           if npm view "libsortition-wasm@$version" version >/dev/null 2>&1; then
             echo "libsortition-wasm $version is already on npm; skipping"
           else
-            npm publish "dist/libsortition-wasm-$version.tgz"
+            npm publish "./dist/libsortition-wasm-$version.tgz"
           fi
