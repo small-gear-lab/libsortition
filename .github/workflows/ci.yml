@@ -127,11 +127,16 @@ jobs:
   node:
     needs: core
     runs-on: ubuntu-latest
-    # 対象は、Node.js 自身がサポートしている LTS（20 は 2026-04-30 に終わった。node-gyp 13 も 22.22 以上を要求する）
+    # 対象は、Node.js 自身がサポートしている LTS の 22 と 24（20 は 2026-04-30 に終わった。node-gyp 13 も 22.22 以上を要求する）。
+    # Current の 26 は、LTS になる（2026-10-28）まで結果を見るだけにして、失敗してもワークフローは落とさない
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
-        node: ["22", "24"]
+        include:
+          - { node: "22", experimental: false }
+          - { node: "24", experimental: false }
+          - { node: "26", experimental: true }
     defaults:
       run:
         working-directory: bindings/node
