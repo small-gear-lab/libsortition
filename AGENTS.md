@@ -62,11 +62,7 @@ A release is a version tag; everything else follows from it. Steps, in order:
 4. Merge to `main`, wait for CI to pass, then run **Release** by hand ("Run workflow") as a dry run. It builds every asset from the branch and keeps them as workflow artifacts without making a release.
 5. Tag the commit (`git tag vX.Y.Z && git push origin vX.Y.Z`; the tag must equal the version, and the commit must be on `main` with a green CI). `.github/workflows/release.yml` builds the command and the shared library for Linux (x86-64, arm64), macOS (arm64, x86-64) and Windows (x86-64), the npm package and `sortition.wasm`, writes `SHA256SUMS`, attests every file and makes a **draft** GitHub Release.
 6. Read the draft, then press "Publish release". That starts `pages.yml`, which publishes `/vX.Y.Z/` (and `/latest/` for a stable version).
-7. Publish the packages by hand, in this order (they need accounts and 2FA, so they are not automated):
-   - crates.io: `cargo publish -p sortition`, wait until it appears in the index, then `cargo publish -p sortition-cli`.
-   - npm: `cd bindings/wasm && bindings/wasm/build.sh && npm publish` (see below).
-   - NuGet: run **Publish** by hand ("Run workflow", with the tag). It uses Trusted Publishing (a nuget.org policy for `publish.yml` and the `release` environment), so there is no API key; a reviewer approves the run. The package has no native library; the user supplies `libsortition`.
-   - Python, Ruby, PHP, Go, Java, Swift and Dart are used from source for now (no registry package yet).
+7. Publish the packages: run **Publish** by hand ("Run workflow", with the tag) once the GitHub Release is published. One run publishes to crates.io (`sortition`, then `sortition-cli`), npm (the very `libsortition-wasm-X.Y.Z.tgz` of the release, after checking `SHA256SUMS`) and NuGet. All three use Trusted Publishing, so there is no API key anywhere: each registry has an entry that names `publish.yml` and the `release` environment (crates.io: each crate's Settings; npm: the package's Settings; nuget.org: Account → Trusted Publishing), and a reviewer approves the run (one approval covers the three jobs). A version that a registry already has is skipped, so a failed run can be run again. The NuGet package has no native library; the user supplies `libsortition`. Python, Ruby, PHP, Go, Java, Swift and Dart are used from source for now (no registry package yet).
 8. Never move or delete a published tag. A mistake gets a new patch version.
 
 ## Publishing the WebAssembly build

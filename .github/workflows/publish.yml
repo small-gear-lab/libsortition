@@ -1,13 +1,16 @@
 name: Publish
 
-# Publishes a released version to the package registries that support Trusted Publishing, with no
-# long-lived API key: the job gets a short-lived credential from GitHub's OIDC token.
-#   - NuGet: the Sortition package (the nuget.org policy names this file and the "release" environment)
-# crates.io and npm will join once their Trusted Publishing is set up (it needs the first release
-# to exist). Run it by hand ("Run workflow") with the tag to publish, e.g. v0.1.0.
+# Publishes a released version to the package registries, with no long-lived API key: each job gets
+# a short-lived credential from GitHub's OIDC token. Every registry has a Trusted Publishing entry
+# that names this file and the "release" environment:
+#   - nuget: the Sortition package (nuget.org, Account → Trusted Publishing)
+#   - crates: sortition, then sortition-cli (crates.io, each crate's Settings → Trusted Publishing)
+#   - npm: libsortition-wasm (npmjs.com, the package's Settings → Trusted Publisher)
+# Run it by hand ("Run workflow") with the tag to publish, e.g. v0.1.1, after the GitHub Release is
+# published. A version that is already on a registry is skipped, so the run can be repeated.
 #
-# The "release" environment (Settings → Environments) should require a reviewer, so that a person
-# approves each run.
+# The "release" environment (Settings → Environments) requires a reviewer, so a person approves each
+# run (one approval covers the three jobs).
 
 on:
   workflow_dispatch:
@@ -59,3 +62,84 @@ jobs:
           TAG: ${{ inputs.tag }}
           NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: dotnet nuget push "dist/Sortition.${TAG#v}.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  crates:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: The tag looks like a version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::The tag must look like v1.2.3, but it is '$TAG'"; exit 1; }
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Every version number matches the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: python3 .github/scripts/version.py check "$TAG"
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish sortition, then sortition-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          version="${TAG#v}"
+          published() { [ "$(curl -s -o /dev/null -w '%{http_code}' -A 'libsortition-publish' "https://crates.io/api/v1/crates/$1/$version")" = 200 ]; }
+          for crate in sortition sortition-cli; do
+            if published "$crate"; then
+              echo "$crate $version is already on crates.io; skipping"
+              continue
+            fi
+            cargo publish --locked -p "$crate"
+            # sortition-cli cannot be built until the crate it depends on is in the index
+            for i in $(seq 1 30); do
+              published "$crate" && break
+              sleep 10
+            done
+          done
+
+  npm:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: The tag looks like a version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::The tag must look like v1.2.3, but it is '$TAG'"; exit 1; }
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24" # npm 11.5.1 or later is needed for Trusted Publishing
+          registry-url: https://registry.npmjs.org
+      - name: npm is new enough
+        run: |
+          v="$(npm --version)"
+          [ "$(printf '%s\n11.5.1\n' "$v" | sort -V | sed -n 1p)" = 11.5.1 ] || { echo "::error::npm $v is older than 11.5.1"; exit 1; }
+      - name: Download the package from the release, and check it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir dist && cd dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p "libsortition-wasm-${TAG#v}.tgz" -p SHA256SUMS
+          sha256sum --check --ignore-missing SHA256SUMS
+      - name: Publish the very file that the release has
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          version="${TAG#v}"
+          if npm view "libsortition-wasm@$version" version >/dev/null 2>&1; then
+            echo "libsortition-wasm $version is already on npm; skipping"
+          else
+            npm publish "dist/libsortition-wasm-$version.tgz"
+          fi
