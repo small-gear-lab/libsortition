@@ -1,0 +1,15 @@
+{
+  "name": "libsortition",
+  "version": "0.1.0",
+  "description": "libsortition の Node.js バインディング（N-API ネイティブアドオン）",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "gypfile": true,
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": { "node": ">=18" },
+  "devDependencies": { "node-gyp": "^11.0.0" },
+  "license": "MIT OR Apache-2.0"
+}
