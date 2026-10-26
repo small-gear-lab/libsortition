@@ -657,18 +657,23 @@ static void sortition_hex32(const uint8_t *id, char out[64])
 }
 
 /* 当選結果を [['index' => int, 'id' => string], ...] にして dest に入れる */
-static void sortition_picks_to_array(zval *dest, const uint32_t *indexes, const uint8_t *ids, uint32_t k)
+static void sortition_picks_slice_to_array(zval *dest, const uint32_t *indexes, const uint8_t *ids, size_t offset, size_t count)
 {
 	char hex[64];
-	array_init_size(dest, k);
-	for (uint32_t i = 0; i < k; i++) {
+	array_init_size(dest, (uint32_t) count);
+	for (size_t i = offset; i < offset + count; i++) {
 		zval row;
 		array_init(&row);
 		add_assoc_long(&row, "index", (zend_long) indexes[i]);
-		sortition_hex32(ids + 32 * (size_t) i, hex);
+		sortition_hex32(ids + 32 * i, hex);
 		add_assoc_stringl(&row, "id", hex, 64);
 		add_next_index_zval(dest, &row);
 	}
+}
+
+static void sortition_picks_to_array(zval *dest, const uint32_t *indexes, const uint8_t *ids, uint32_t k)
+{
+	sortition_picks_slice_to_array(dest, indexes, ids, 0, k);
 }
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sortition_item_ids, 0, 0, 1)
@@ -1099,6 +1104,172 @@ PHP_FUNCTION(sortition_seal_key_id)
 	RETURN_LONG((zend_long) id);
 }
 
+/* ---- seed の文字列と、賞ごとの抽選 ---- */
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sortition_seed_from_text, 0, 0, 1)
+	ZEND_ARG_INFO(0, text)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sortition_draw_stages, 0, 0, 2)
+	ZEND_ARG_INFO(0, items)
+	ZEND_ARG_INFO(0, stages)
+	ZEND_ARG_INFO(0, seed)
+ZEND_END_ARG_INFO()
+
+/* seed の文字列から seed を決める。文字列の SHA-256 の先頭 8 バイトをリトルエンディアンで読んだ値。
+ * PHP の int は符号付きなので、2^63 以上の値は負の int になる（そのまま seed に渡せば同じ抽選になる） */
+PHP_FUNCTION(sortition_seed_from_text)
+{
+	char *text;
+	size_t len;
+	uint64_t seed = 0;
+
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_STRING(text, len)
+	ZEND_PARSE_PARAMETERS_END();
+
+	sortition_seed_from_text((const uint8_t *) text, len, &seed, NULL);
+	RETURN_LONG((zend_long) seed);
+}
+
+/* seed の文字列の SHA-256（小文字 16 進 64 文字）。抽選の前に公開するコミット値 */
+PHP_FUNCTION(sortition_seed_commit)
+{
+	char *text;
+	size_t len;
+	uint64_t seed = 0;
+	uint8_t digest[32];
+	char hex[64];
+
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_STRING(text, len)
+	ZEND_PARSE_PARAMETERS_END();
+
+	sortition_seed_from_text((const uint8_t *) text, len, &seed, digest);
+	sortition_hex32(digest, hex);
+	RETURN_STRINGL(hex, 64);
+}
+
+/* 賞 1 件（['name' => string, 'count' => int] か [string, int]）を読む。違反なら例外を投げて FAILURE */
+static int sortition_stage_parse(zval *spec, zend_long i, zend_string **name, zend_long *count)
+{
+	zval *zname, *zcount;
+	HashTable *ht;
+
+	ZVAL_DEREF(spec);
+	if (Z_TYPE_P(spec) != IS_ARRAY) {
+		zend_type_error("sortition_draw_stages(): stages[" ZEND_LONG_FMT "] must be an array", i);
+		return FAILURE;
+	}
+	ht = Z_ARRVAL_P(spec);
+	zname = zend_hash_str_find(ht, "name", sizeof("name") - 1);
+	zcount = zend_hash_str_find(ht, "count", sizeof("count") - 1);
+	if (!zname) {
+		zname = zend_hash_index_find(ht, 0);
+	}
+	if (!zcount) {
+		zcount = zend_hash_index_find(ht, 1);
+	}
+	if (zname) {
+		ZVAL_DEREF(zname);
+	}
+	if (zcount) {
+		ZVAL_DEREF(zcount);
+	}
+	if (!zname || Z_TYPE_P(zname) != IS_STRING) {
+		zend_type_error("sortition_draw_stages(): stages[" ZEND_LONG_FMT "] name must be a string", i);
+		return FAILURE;
+	}
+	if (!zcount || Z_TYPE_P(zcount) != IS_LONG) {
+		zend_type_error("sortition_draw_stages(): stages[" ZEND_LONG_FMT "] count must be an int", i);
+		return FAILURE;
+	}
+	if (Z_LVAL_P(zcount) < 0) {
+		zend_throw_exception_ex(zend_ce_value_error, 0,
+			"sortition_draw_stages(): stages[" ZEND_LONG_FMT "] count must not be negative", i);
+		return FAILURE;
+	}
+	*name = Z_STR_P(zname);
+	*count = Z_LVAL_P(zcount);
+	return SUCCESS;
+}
+
+/* 賞ごとに順番に抽選する（重複当選なし）。合計人数を sortition_draw_items で一度に引いて、先頭から賞ごとに
+ * 切り分ける。[['name' => ..., 'count' => ..., 'winners' => [['index' => ..., 'id' => ...], ...]], ...] を返す。
+ * 候補は ID の昇順に並べてから引くので、同じ候補集合とシードなら、items の並びが違っても同じ候補が当選する */
+PHP_FUNCTION(sortition_draw_stages)
+{
+	HashTable *items, *stages;
+	zend_long seed = 0, i = 0;
+	bool seed_is_null = 1;
+	uint64_t useed, total = 0;
+	zval *zv;
+	sortition_items_buf b;
+	uint32_t *indexes;
+	uint8_t *ids;
+	size_t offset = 0;
+	int32_t rc;
+
+	ZEND_PARSE_PARAMETERS_START(2, 3)
+		Z_PARAM_ARRAY_HT(items)
+		Z_PARAM_ARRAY_HT(stages)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG_OR_NULL(seed, seed_is_null)
+	ZEND_PARSE_PARAMETERS_END();
+
+	ZEND_HASH_FOREACH_VAL(stages, zv) {
+		zend_string *name;
+		zend_long count;
+		if (sortition_stage_parse(zv, i++, &name, &count) != SUCCESS) {
+			RETURN_THROWS();
+		}
+		if ((uint64_t) count > UINT32_MAX - total) {
+			SORTITION_THROW_VALUE("sortition_draw_stages(): the stages need too many winners");
+			RETURN_THROWS();
+		}
+		total += (uint64_t) count;
+	} ZEND_HASH_FOREACH_END();
+	if (total > zend_hash_num_elements(items)) {
+		zend_throw_exception_ex(zend_ce_value_error, 0,
+			"sortition_draw_stages(): the stages need %" PRIu64 " winners but there are only %u candidates",
+			total, zend_hash_num_elements(items));
+		RETURN_THROWS();
+	}
+	if (sortition_items_pack(items, "sortition_draw_stages()", &b) != SUCCESS) {
+		RETURN_THROWS();
+	}
+	useed = (uint64_t) seed;
+	indexes = safe_emalloc((size_t) (total ? total : 1), sizeof(uint32_t), 0);
+	ids = safe_emalloc((size_t) total, 32, 1);
+	rc = sortition_items_draw(b.data, b.lens, b.count, (uint32_t) total,
+		seed_is_null ? NULL : &useed, indexes, ids);
+	sortition_items_buf_free(&b);
+	if (rc != SORTITION_OK) {
+		efree(indexes);
+		efree(ids);
+		sortition_throw_fn(rc, "sortition_draw_stages");
+		RETURN_THROWS();
+	}
+
+	array_init_size(return_value, zend_hash_num_elements(stages));
+	i = 0;
+	ZEND_HASH_FOREACH_VAL(stages, zv) {
+		zend_string *name;
+		zend_long count;
+		zval row, winners;
+		sortition_stage_parse(zv, i++, &name, &count); /* 上で検査済み */
+		array_init(&row);
+		add_assoc_str(&row, "name", zend_string_copy(name));
+		add_assoc_long(&row, "count", count);
+		sortition_picks_slice_to_array(&winners, indexes, ids, offset, (size_t) count);
+		add_assoc_zval(&row, "winners", &winners);
+		add_next_index_zval(return_value, &row);
+		offset += (size_t) count;
+	} ZEND_HASH_FOREACH_END();
+	efree(indexes);
+	efree(ids);
+}
+
 PHP_FUNCTION(sortition_version)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
@@ -1112,6 +1283,9 @@ static const zend_function_entry sortition_functions[] = {
 	PHP_FE(sortition_item_ids, arginfo_sortition_item_ids)
 	PHP_FE(sortition_item_fingerprint, arginfo_sortition_item_ids)
 	PHP_FE(sortition_draw_items, arginfo_sortition_draw_items)
+	PHP_FE(sortition_seed_from_text, arginfo_sortition_seed_from_text)
+	PHP_FE(sortition_seed_commit, arginfo_sortition_seed_from_text)
+	PHP_FE(sortition_draw_stages, arginfo_sortition_draw_stages)
 	PHP_FE(sortition_seal_key_id, arginfo_sortition_seal_key_id)
 	PHP_FE(sortition_version, arginfo_sortition_version)
 	PHP_FE_END
