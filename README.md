@@ -119,9 +119,20 @@ state = lot.save()                          # includes the drawn IDs and the fin
 sortition.ItemSession.load(state, reversed(people)).draw(1)   # same set, any order
 ```
 
-Byte-string candidates are in every binding too: `draw_items` / `ItemSession` (Python), `Sortition.draw_items` / `Sortition::ItemSession` (Ruby), `drawItems` / `createItemSession` / `loadItemSession` (Node.js and WebAssembly), and `sortition_draw_items` / `SortitionItemSession` (PHP). IDs and fingerprints are lowercase hex strings, and a pick is `index` (the position in the list you passed) plus `id`.
+Candidates given as bytes or strings and sessions are in every binding. Only the names differ; IDs and fingerprints are lowercase hex strings, and a pick is `index` (the position in the list you passed) plus `id`.
 
-Sessions are in every binding: `Session` (Python), `Sortition::Session` (Ruby), `createSession` / `loadSession` (Node.js and WebAssembly), and `SortitionSession` (PHP).
+| language | candidates (order-independent) | session over `0..n-1` | session over candidates | more |
+|---|---|---|---|---|
+| Python | `draw_items` | `Session` | `ItemSession` | |
+| Ruby | `Sortition.draw_items` | `Sortition::Session` | `Sortition::ItemSession` | |
+| Node.js, WebAssembly | `drawItems` | `createSession` / `loadSession` | `createItemSession` / `loadItemSession` | [`bindings/wasm`](bindings/wasm/README.md) |
+| PHP | `sortition_draw_items` | `SortitionSession` | `SortitionItemSession` | |
+| .NET | `Lottery.DrawItems` | `Session` | `ItemSession` | [`bindings/dotnet`](bindings/dotnet/README.md) |
+| Go | `DrawItems` | `NewSession` | `NewItemSession` | [`bindings/go`](bindings/go/README.md) |
+| Java, Kotlin | `Lottery.drawItems` | `Session` | `ItemSession` | [`bindings/java`](bindings/java/README.md) |
+| Swift | `Lottery.drawItems` | `Session` | `ItemSession` | [`bindings/swift`](bindings/swift/README.md) |
+| Dart | `Lottery.drawItems` | `Session` | `ItemSession` | [`bindings/dart`](bindings/dart/README.md) |
+| C, C++ | `sortition_items_draw` | `sortition_session_*` | `sortition_item_session_*` | [`core/include/sortition.h`](core/include/sortition.h) |
 
 ### Resuming after a reload or an expired HTTP session
 

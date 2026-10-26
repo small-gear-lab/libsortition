@@ -119,9 +119,20 @@ state = lot.save()                          # 引いた ID と指紋を含む
 sortition.ItemSession.load(state, reversed(people)).draw(1)   # 同じ集合なら並びは自由
 ```
 
-バイト列の候補もどのバインディングにもあります: `draw_items` / `ItemSession`（Python）、`Sortition.draw_items` / `Sortition::ItemSession`（Ruby）、`drawItems` / `createItemSession` / `loadItemSession`（Node.js と WebAssembly）、`sortition_draw_items` / `SortitionItemSession`（PHP）。ID と指紋は小文字の 16 進文字列で、当選は `index`（渡したリストの中の位置）と `id` です。
+バイト列・文字列の候補とセッションは、どのバインディングにもあります。違うのは名前だけです。ID と指紋は小文字の 16 進文字列で、当選は `index`（渡したリストの中の位置）と `id` です。
 
-セッションはどのバインディングにもあります: `Session`（Python）、`Sortition::Session`（Ruby）、`createSession` / `loadSession`（Node.js と WebAssembly）、`SortitionSession`（PHP）。
+| 言語 | 候補の抽選（順序に依らない） | `0..n-1` のセッション | 候補のセッション | 詳細 |
+|---|---|---|---|---|
+| Python | `draw_items` | `Session` | `ItemSession` | |
+| Ruby | `Sortition.draw_items` | `Sortition::Session` | `Sortition::ItemSession` | |
+| Node.js、WebAssembly | `drawItems` | `createSession` / `loadSession` | `createItemSession` / `loadItemSession` | [`bindings/wasm`](bindings/wasm/README.md) |
+| PHP | `sortition_draw_items` | `SortitionSession` | `SortitionItemSession` | |
+| .NET | `Lottery.DrawItems` | `Session` | `ItemSession` | [`bindings/dotnet`](bindings/dotnet/README.md) |
+| Go | `DrawItems` | `NewSession` | `NewItemSession` | [`bindings/go`](bindings/go/README.md) |
+| Java、Kotlin | `Lottery.drawItems` | `Session` | `ItemSession` | [`bindings/java`](bindings/java/README.md) |
+| Swift | `Lottery.drawItems` | `Session` | `ItemSession` | [`bindings/swift`](bindings/swift/README.md) |
+| Dart | `Lottery.drawItems` | `Session` | `ItemSession` | [`bindings/dart`](bindings/dart/README.md) |
+| C、C++ | `sortition_items_draw` | `sortition_session_*` | `sortition_item_session_*` | [`core/include/sortition.h`](core/include/sortition.h) |
 
 ### リロードや HTTP セッション切れのあとに続きから引く
 
