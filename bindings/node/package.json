@@ -10,6 +10,6 @@
     "test": "node --test test/*.test.js"
   },
   "engines": { "node": ">=22" },
-  "devDependencies": { "node-gyp": "^11.0.0" },
+  "devDependencies": { "node-gyp": "^13.1.0" },
   "license": "MIT OR Apache-2.0"
 }
