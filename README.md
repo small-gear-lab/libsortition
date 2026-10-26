@@ -11,7 +11,8 @@ A small library for unbiased random lotteries: it picks `k` of `n` candidates wi
 - **Sampling without replacement.** `draw(n, k)` picks `k` distinct numbers from `0..n`, in the order they were drawn.
 - **Reproducible when you want it.** With no seed the OS random source is used; with a seed (a `u64`) the same seed gives the same result.
 - **Candidates from text or data.** One candidate per line of text (surrounding spaces are trimmed, empty lines are dropped), or an array inside JSON, YAML or TOML (`path` such as `a.b.0` says where the array is). YAML aliases, custom tags and multiple documents are rejected.
-- **A C ABI.** The header is [core/include/sortition.h](core/include/sortition.h): `sortition_draw`, `sortition_draw_text`, `sortition_draw_data`, `sortition_free`, `sortition_last_error`, `sortition_version`.
+- **Sessions: keep drawing where you left off.** A session holds `0..n` and draws without replacement each time you call it. Its state can be saved as JSON and restored later, so the draw can continue from a database or a file. With a seed, drawing in several steps gives the same order as one big `draw(n, k1 + k2 + ..., seed)`. A saved state that is malformed or inconsistent is rejected.
+- **A C ABI.** The header is [core/include/sortition.h](core/include/sortition.h): `sortition_draw`, `sortition_draw_text`, `sortition_draw_data`, `sortition_session_*`, `sortition_free`, `sortition_last_error`, `sortition_version`.
 
 ## Layout
 
@@ -43,7 +44,14 @@ sortition.draw(10, 3)                       # e.g. [7, 2, 5]
 sortition.draw(10, 3, seed=42)              # the same result every time
 sortition.draw_text("alice\nbob\ncarol\n", 2)
 sortition.draw_data('{"members": ["a", "b", "c"]}', 2, "json", path="members")
+
+lot = sortition.Session(100, seed=1)        # a session: draw in steps
+lot.draw(3)                                 # the first 3
+state = lot.save()                          # JSON string; store it anywhere
+sortition.Session.load(state).draw(2)       # the next 2, as if never interrupted
 ```
+
+Sessions are in every binding: `Session` (Python), `Sortition::Session` (Ruby), `createSession` / `loadSession` (Node.js and WebAssembly), and `SortitionSession` (PHP).
 
 ```sh
 cd bindings/node && npm install && npm run build && npm test   # Node.js

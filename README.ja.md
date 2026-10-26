@@ -11,7 +11,8 @@
 - **非復元抽出。** `draw(n, k)` は `0..n` から重複しない `k` 個の数を、選ばれた順に返します。
 - **必要なときは再現できる。** シードなしなら OS の乱数源を使い、シード（`u64`）を指定すると同じシードで同じ結果になります。
 - **テキストやデータから候補を取る。** 1 行 1 候補のテキスト（前後の空白は除き、空行は捨てます）か、JSON・YAML・TOML の中にある配列（`a.b.0` のような `path` で場所を指定）。YAML のエイリアス・独自タグ・複数ドキュメントは拒否します。
-- **C ABI。** ヘッダは [core/include/sortition.h](core/include/sortition.h) で、`sortition_draw`、`sortition_draw_text`、`sortition_draw_data`、`sortition_free`、`sortition_last_error`、`sortition_version` があります。
+- **セッションで続きから引ける。** セッションは `0..n` を母集団として、呼ぶたびに非復元抽出します。状態は JSON で保存して後から復元できるので、DB やファイルに預けて抽選を続けられます。シードを指定すれば、何回に分けて引いても `draw(n, k1 + k2 + ..., seed)` を一度に引いたときと同じ並びになります。形式が壊れている、または中身が矛盾している保存状態は拒否します。
+- **C ABI。** ヘッダは [core/include/sortition.h](core/include/sortition.h) で、`sortition_draw`、`sortition_draw_text`、`sortition_draw_data`、`sortition_session_*`、`sortition_free`、`sortition_last_error`、`sortition_version` があります。
 
 ## 構成
 
@@ -43,7 +44,14 @@ sortition.draw(10, 3)                       # 例: [7, 2, 5]
 sortition.draw(10, 3, seed=42)              # 毎回同じ結果
 sortition.draw_text("alice\nbob\ncarol\n", 2)
 sortition.draw_data('{"members": ["a", "b", "c"]}', 2, "json", path="members")
+
+lot = sortition.Session(100, seed=1)        # セッション: 何回かに分けて引く
+lot.draw(3)                                 # 最初の 3 個
+state = lot.save()                          # JSON 文字列。どこに保存してもよい
+sortition.Session.load(state).draw(2)       # 次の 2 個。途切れなかったときと同じ続き
 ```
+
+セッションはどのバインディングにもあります: `Session`（Python）、`Sortition::Session`（Ruby）、`createSession` / `loadSession`（Node.js と WebAssembly）、`SortitionSession`（PHP）。
 
 ```sh
 cd bindings/node && npm install && npm run build && npm test   # Node.js
