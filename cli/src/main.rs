@@ -211,6 +211,7 @@ fn record(seed_text: &str, items: &[String], results: &[StageResult]) -> Value {
     let (count, fingerprint) = candidate_summary(items);
     json!({
         "format": RECORD_FORMAT,
+        "algorithm": sortition::ALGORITHM,
         "libsortition": sortition::VERSION,
         "seed": {
             "text": seed_text,
@@ -295,6 +296,14 @@ fn verify(args: VerifyArgs) -> Result<ExitCode, String> {
     let rec: Value = serde_json::from_str(&text).map_err(|e| format!("the record is not valid JSON: {e}"))?;
     if str_at(&rec, &["format"])? != RECORD_FORMAT {
         return Err(format!("unsupported record format (this tool reads {RECORD_FORMAT})"));
+    }
+    // 別の版のアルゴリズムで引いた記録を、この版で確かめて「違う」と言ってしまわないように、先に名前を見る
+    let algorithm = str_at(&rec, &["algorithm"])?;
+    if algorithm != sortition::ALGORITHM {
+        return Err(format!(
+            "the record was made with the algorithm {algorithm}, but this tool implements {} and cannot verify it",
+            sortition::ALGORITHM
+        ));
     }
     let seed_text = str_at(&rec, &["seed", "text"])?;
     let recorded_commit = str_at(&rec, &["seed", "commit"])?;

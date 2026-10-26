@@ -153,6 +153,16 @@ fn a_record_can_be_verified_and_a_changed_input_cannot() {
     assert!(err(&o).contains("does not hash to the commitment"));
 
     let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    json["algorithm"] = "libsortition-draw/2".into();
+    let o = run(&["verify", &write(&d, "algorithm.json", &json.to_string()), &file], None);
+    assert_eq!(code(&o), 2);
+    assert!(err(&o).contains("libsortition-draw/2") && err(&o).contains("cannot verify"), "{}", err(&o));
+    json.as_object_mut().unwrap().remove("algorithm");
+    let o = run(&["verify", &write(&d, "no-algorithm.json", &json.to_string()), &file], None);
+    assert_eq!(code(&o), 2);
+    assert!(err(&o).contains("no \"algorithm\""), "{}", err(&o));
+
+    let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
     json["format"] = "something-else/9".into();
     let o = run(&["verify", &write(&d, "format.json", &json.to_string()), &file], None);
     assert_eq!(code(&o), 2);
@@ -168,6 +178,7 @@ fn a_random_seed_is_kept_in_the_record() {
     assert_eq!(code(&o), 0, "{}", err(&o));
     let rec: serde_json::Value = serde_json::from_str(&out(&o)).unwrap();
     assert_eq!(rec["format"], "libsortition-draw-record/1");
+    assert_eq!(rec["algorithm"], sortition::ALGORITHM);
     let seed = rec["seed"]["text"].as_str().unwrap();
     assert_eq!(seed.len(), 24);
     assert!(err(&o).contains(seed));
