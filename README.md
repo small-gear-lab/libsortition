@@ -24,7 +24,7 @@ A small library for unbiased random lotteries: it picks `k` of `n` candidates wi
 |---|---|
 | `core/` | the Rust crate (`cdylib` and `rlib`) and the C header |
 | `bindings/node/` | Node.js (N-API native addon) |
-| `bindings/php/` | PHP extension |
+| `bindings/php/` | PHP extension (PHP 8.2 or later) |
 | `bindings/python/` | Python (ctypes, no dependencies) |
 | `bindings/ruby/` | Ruby (Fiddle, standard library only) |
 | `bindings/wasm/` | WebAssembly for browsers and Node (no dependencies), with a demo |

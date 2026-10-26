@@ -143,16 +143,16 @@ jobs:
   php:
     needs: core
     runs-on: ubuntu-latest
-    # 動作を確かめているのは 8.4 だけ。それ以外は結果を見るだけで、失敗してもワークフローは落とさない
+    # 対応するのは、PHP が今サポートしている 8.2 以降。8.5 は初めて通るまで結果を見るだけにして、失敗してもワークフローは落とさない
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          - { php: "8.5", experimental: true }
           - { php: "8.4", experimental: false }
-          - { php: "8.3", experimental: true }
-          - { php: "8.2", experimental: true }
-          - { php: "8.1", experimental: true }
+          - { php: "8.3", experimental: false }
+          - { php: "8.2", experimental: false }
     steps:
       - uses: actions/checkout@v7
       - uses: shivammathur/setup-php@v2

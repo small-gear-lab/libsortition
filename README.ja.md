@@ -24,7 +24,7 @@
 |---|---|
 | `core/` | Rust のクレート（`cdylib` と `rlib`）と C ヘッダ |
 | `bindings/node/` | Node.js（N-API ネイティブアドオン） |
-| `bindings/php/` | PHP 拡張 |
+| `bindings/php/` | PHP 拡張（PHP 8.2 以降） |
 | `bindings/python/` | Python（ctypes、依存なし） |
 | `bindings/ruby/` | Ruby（Fiddle、標準ライブラリのみ） |
 | `bindings/wasm/` | ブラウザと Node 向けの WebAssembly（依存なし）とデモ |

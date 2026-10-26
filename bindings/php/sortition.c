@@ -4,35 +4,16 @@
 
 #include "php.h"
 #include "ext/standard/info.h"
-#include "ext/spl/spl_exceptions.h"
 #include "ext/json/php_json.h"
 #include "zend_exceptions.h"
 #include "php_sortition.h"
 #include "sortition.h"
 
-#if PHP_VERSION_ID < 70400
-# error "ext/sortition requires PHP 7.4 or later"
+#if PHP_VERSION_ID < 80200
+# error "ext/sortition requires PHP 8.2 or later"
 #endif
 
-/* PHP 8.0 以降の API を 7.4 でも同じ書き方で使うための互換シム。
- * 値の誤りは 8.x が ValueError、7.x が InvalidArgumentException。
- * 引数の型の誤りはどちらも TypeError（7.x は THROW フラグを付けないと警告になる）。 */
-#if PHP_VERSION_ID >= 80000
-# define SORTITION_VALUE_ERROR zend_ce_value_error
-# define SORTITION_PARSE_START(min, max) ZEND_PARSE_PARAMETERS_START(min, max)
-# define SORTITION_PARAM_LONG_OR_NULL(dest, is_null) Z_PARAM_LONG_OR_NULL(dest, is_null)
-# define SORTITION_PARAM_STRING_OR_NULL(dest, len) Z_PARAM_STRING_OR_NULL(dest, len)
-typedef bool sortition_bool;
-#else
-# define SORTITION_VALUE_ERROR spl_ce_InvalidArgumentException
-# define SORTITION_PARSE_START(min, max) ZEND_PARSE_PARAMETERS_START_EX(ZEND_PARSE_PARAMS_THROW, min, max)
-# define SORTITION_PARAM_LONG_OR_NULL(dest, is_null) Z_PARAM_LONG_EX(dest, is_null, 1, 0)
-# define SORTITION_PARAM_STRING_OR_NULL(dest, len) Z_PARAM_STRING_EX(dest, len, 1, 0)
-# define RETURN_THROWS() return
-typedef zend_bool sortition_bool;
-#endif
-
-#define SORTITION_THROW_VALUE(msg) zend_throw_exception(SORTITION_VALUE_ERROR, (msg), 0)
+#define SORTITION_THROW_VALUE(msg) zend_throw_exception(zend_ce_value_error, (msg), 0)
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sortition_draw, 0, 0, 2)
 	ZEND_ARG_INFO(0, n)
@@ -61,16 +42,16 @@ ZEND_END_ARG_INFO()
 PHP_FUNCTION(sortition_draw)
 {
 	zend_long n, k, seed = 0;
-	sortition_bool seed_is_null = 1;
+	bool seed_is_null = 1;
 	uint64_t useed;
 	uint32_t *buf;
 	int32_t rc;
 
-	SORTITION_PARSE_START(2, 3)
+	ZEND_PARSE_PARAMETERS_START(2, 3)
 		Z_PARAM_LONG(n)
 		Z_PARAM_LONG(k)
 		Z_PARAM_OPTIONAL
-		SORTITION_PARAM_LONG_OR_NULL(seed, seed_is_null)
+		Z_PARAM_LONG_OR_NULL(seed, seed_is_null)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (n < 0 || n > UINT32_MAX || k < 0 || k > n) {
@@ -100,16 +81,16 @@ PHP_FUNCTION(sortition_draw_text)
 	char *text;
 	size_t text_len;
 	zend_long k, seed = 0;
-	sortition_bool seed_is_null = 1;
+	bool seed_is_null = 1;
 	uint64_t useed;
 	uint8_t *buf;
 	int64_t n;
 
-	SORTITION_PARSE_START(2, 3)
+	ZEND_PARSE_PARAMETERS_START(2, 3)
 		Z_PARAM_STRING(text, text_len)
 		Z_PARAM_LONG(k)
 		Z_PARAM_OPTIONAL
-		SORTITION_PARAM_LONG_OR_NULL(seed, seed_is_null)
+		Z_PARAM_LONG_OR_NULL(seed, seed_is_null)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (k < 0 || k > UINT32_MAX) {
@@ -125,9 +106,9 @@ PHP_FUNCTION(sortition_draw_text)
 	if (n < 0) {
 		efree(buf);
 		if (n == SORTITION_ERR_UTF8) {
-			zend_throw_exception(SORTITION_VALUE_ERROR, "sortition_draw_text(): text is not valid UTF-8", (zend_long) n);
+			zend_throw_exception(zend_ce_value_error, "sortition_draw_text(): text is not valid UTF-8", (zend_long) n);
 		} else if (n == SORTITION_ERR_INVALID) {
-			zend_throw_exception(SORTITION_VALUE_ERROR, "sortition_draw_text(): k exceeds the number of candidates", (zend_long) n);
+			zend_throw_exception(zend_ce_value_error, "sortition_draw_text(): k exceeds the number of candidates", (zend_long) n);
 		} else {
 			zend_throw_exception_ex(NULL, (zend_long) n, "sortition_draw_text() failed (code %d)", (int) n);
 		}
@@ -154,19 +135,19 @@ PHP_FUNCTION(sortition_draw_data)
 	char *text, *format, *path = "";
 	size_t text_len, format_len, path_len = 0;
 	zend_long k, seed = 0;
-	sortition_bool seed_is_null = 1;
+	bool seed_is_null = 1;
 	uint64_t useed;
 	int32_t fmt, rc;
 	char *json = NULL;
 	const char *detail;
 
-	SORTITION_PARSE_START(3, 5)
+	ZEND_PARSE_PARAMETERS_START(3, 5)
 		Z_PARAM_STRING(text, text_len)
 		Z_PARAM_LONG(k)
 		Z_PARAM_STRING(format, format_len)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_STRING(path, path_len)
-		SORTITION_PARAM_LONG_OR_NULL(seed, seed_is_null)
+		Z_PARAM_LONG_OR_NULL(seed, seed_is_null)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (k < 0 || k > UINT32_MAX) {
@@ -195,7 +176,7 @@ PHP_FUNCTION(sortition_draw_data)
 	if (rc != SORTITION_OK) {
 		detail = sortition_last_error();
 		zend_throw_exception_ex(
-			(rc == SORTITION_ERR_INTERNAL || rc == SORTITION_ERR_RNG) ? zend_ce_exception : SORTITION_VALUE_ERROR,
+			(rc == SORTITION_ERR_INTERNAL || rc == SORTITION_ERR_RNG) ? zend_ce_exception : zend_ce_value_error,
 			(zend_long) rc, "sortition_draw_data(): %s", (detail && *detail) ? detail : "failed");
 		RETURN_THROWS();
 	}
@@ -290,7 +271,7 @@ static const char *sortition_default_message(int32_t rc)
 static void sortition_throw(int32_t rc, const char *cls, const char *what, const char *detail)
 {
 	zend_class_entry *ce = (rc == SORTITION_ERR_INTERNAL || rc == SORTITION_ERR_RNG)
-		? zend_ce_exception : SORTITION_VALUE_ERROR;
+		? zend_ce_exception : zend_ce_value_error;
 	zend_throw_exception_ex(ce, (zend_long) rc, "%s::%s(): %s", cls, what,
 		(detail && *detail) ? detail : sortition_default_message(rc));
 }
@@ -299,7 +280,7 @@ static void sortition_throw(int32_t rc, const char *cls, const char *what, const
 static int sortition_check_key(const char *key, size_t key_len, const char *where)
 {
 	if (key && memchr(key, '\0', key_len) != NULL) {
-		zend_throw_exception_ex(SORTITION_VALUE_ERROR, 0, "%s: key must not contain NUL bytes", where);
+		zend_throw_exception_ex(zend_ce_value_error, 0, "%s: key must not contain NUL bytes", where);
 		return FAILURE;
 	}
 	return SUCCESS;
@@ -308,11 +289,11 @@ static int sortition_check_key(const char *key, size_t key_len, const char *wher
 static int sortition_check_secret(size_t secret_len, zend_long key_id, const char *where)
 {
 	if (secret_len != 32) {
-		zend_throw_exception_ex(SORTITION_VALUE_ERROR, 0, "%s: key must be exactly 32 bytes", where);
+		zend_throw_exception_ex(zend_ce_value_error, 0, "%s: key must be exactly 32 bytes", where);
 		return FAILURE;
 	}
 	if (key_id < 0 || key_id > 255) {
-		zend_throw_exception_ex(SORTITION_VALUE_ERROR, 0, "%s: keyId must be in 0..255", where);
+		zend_throw_exception_ex(zend_ce_value_error, 0, "%s: keyId must be in 0..255", where);
 		return FAILURE;
 	}
 	return SUCCESS;
@@ -322,7 +303,7 @@ static int sortition_check_secret(size_t secret_len, zend_long key_id, const cha
 static void sortition_throw_fn(int32_t rc, const char *fn)
 {
 	zend_class_entry *ce = (rc == SORTITION_ERR_INTERNAL || rc == SORTITION_ERR_RNG)
-		? zend_ce_exception : SORTITION_VALUE_ERROR;
+		? zend_ce_exception : zend_ce_value_error;
 	zend_throw_exception_ex(ce, (zend_long) rc, "%s(): failed (code %d)", fn, (int) rc);
 }
 
@@ -376,16 +357,16 @@ ZEND_END_ARG_INFO()
 ZEND_METHOD(SortitionSession, __construct)
 {
 	zend_long n, seed = 0;
-	sortition_bool seed_is_null = 1;
+	bool seed_is_null = 1;
 	uint64_t useed;
 	sortition_session_obj *o = Z_SESSION_P(ZEND_THIS);
 	sortition_session *created = NULL;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_LONG(n)
 		Z_PARAM_OPTIONAL
-		SORTITION_PARAM_LONG_OR_NULL(seed, seed_is_null)
+		Z_PARAM_LONG_OR_NULL(seed, seed_is_null)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (o->s) {
@@ -412,7 +393,7 @@ ZEND_METHOD(SortitionSession, load)
 	sortition_session *s = NULL;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 1)
+	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_STRING(state, state_len)
 	ZEND_PARSE_PARAMETERS_END();
 
@@ -436,10 +417,10 @@ ZEND_METHOD(SortitionSession, draw)
 	uint32_t *buf;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_LONG(k)
 		Z_PARAM_OPTIONAL
-		SORTITION_PARAM_STRING_OR_NULL(key, key_len)
+		Z_PARAM_STRING_OR_NULL(key, key_len)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (k < 0 || k > UINT32_MAX) {
@@ -506,7 +487,7 @@ ZEND_METHOD(SortitionSession, seal)
 	char *token = NULL;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_STRING(key, key_len)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(key_id)
@@ -535,7 +516,7 @@ ZEND_METHOD(SortitionSession, unseal)
 	sortition_session *s = NULL;
 	int32_t rc;
 
-	SORTITION_PARSE_START(2, 2)
+	ZEND_PARSE_PARAMETERS_START(2, 2)
 		Z_PARAM_STRING(token, token_len)
 		Z_PARAM_STRING(key, key_len)
 	ZEND_PARSE_PARAMETERS_END();
@@ -709,7 +690,7 @@ PHP_FUNCTION(sortition_item_ids)
 	int32_t rc;
 	char hex[64];
 
-	SORTITION_PARSE_START(1, 1)
+	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_ARRAY_HT(items)
 	ZEND_PARSE_PARAMETERS_END();
 
@@ -741,7 +722,7 @@ PHP_FUNCTION(sortition_item_fingerprint)
 	int32_t rc;
 	char hex[64];
 
-	SORTITION_PARSE_START(1, 1)
+	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_ARRAY_HT(items)
 	ZEND_PARSE_PARAMETERS_END();
 
@@ -764,18 +745,18 @@ PHP_FUNCTION(sortition_draw_items)
 {
 	HashTable *items;
 	zend_long k, seed = 0;
-	sortition_bool seed_is_null = 1;
+	bool seed_is_null = 1;
 	uint64_t useed;
 	sortition_items_buf b;
 	uint32_t *indexes;
 	uint8_t *ids;
 	int32_t rc;
 
-	SORTITION_PARSE_START(2, 3)
+	ZEND_PARSE_PARAMETERS_START(2, 3)
 		Z_PARAM_ARRAY_HT(items)
 		Z_PARAM_LONG(k)
 		Z_PARAM_OPTIONAL
-		SORTITION_PARAM_LONG_OR_NULL(seed, seed_is_null)
+		Z_PARAM_LONG_OR_NULL(seed, seed_is_null)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (k < 0 || k > UINT32_MAX) {
@@ -827,17 +808,17 @@ ZEND_METHOD(SortitionItemSession, __construct)
 {
 	HashTable *items;
 	zend_long seed = 0;
-	sortition_bool seed_is_null = 1;
+	bool seed_is_null = 1;
 	uint64_t useed;
 	sortition_session_obj *o = Z_SESSION_P(ZEND_THIS);
 	sortition_items_buf b;
 	sortition_item_session *created = NULL;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_ARRAY_HT(items)
 		Z_PARAM_OPTIONAL
-		SORTITION_PARAM_LONG_OR_NULL(seed, seed_is_null)
+		Z_PARAM_LONG_OR_NULL(seed, seed_is_null)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (o->s) {
@@ -866,7 +847,7 @@ ZEND_METHOD(SortitionItemSession, load)
 	sortition_item_session *s = NULL;
 	int32_t rc;
 
-	SORTITION_PARSE_START(2, 2)
+	ZEND_PARSE_PARAMETERS_START(2, 2)
 		Z_PARAM_STRING(state, state_len)
 		Z_PARAM_ARRAY_HT(items)
 	ZEND_PARSE_PARAMETERS_END();
@@ -896,10 +877,10 @@ ZEND_METHOD(SortitionItemSession, draw)
 	uint8_t *ids;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_LONG(k)
 		Z_PARAM_OPTIONAL
-		SORTITION_PARAM_STRING_OR_NULL(key, key_len)
+		Z_PARAM_STRING_OR_NULL(key, key_len)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (k < 0 || k > UINT32_MAX) {
@@ -962,7 +943,7 @@ ZEND_METHOD(SortitionItemSession, seal)
 	char *token = NULL;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_STRING(key, key_len)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(key_id)
@@ -993,7 +974,7 @@ ZEND_METHOD(SortitionItemSession, unseal)
 	sortition_item_session *s = NULL;
 	int32_t rc;
 
-	SORTITION_PARSE_START(3, 3)
+	ZEND_PARSE_PARAMETERS_START(3, 3)
 		Z_PARAM_STRING(token, token_len)
 		Z_PARAM_STRING(key, key_len)
 		Z_PARAM_ARRAY_HT(items)
@@ -1105,13 +1086,13 @@ PHP_FUNCTION(sortition_seal_key_id)
 	uint8_t id = 0;
 	int32_t rc;
 
-	SORTITION_PARSE_START(1, 1)
+	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_STRING(token, token_len)
 	ZEND_PARSE_PARAMETERS_END();
 
 	rc = sortition_seal_key_id((const uint8_t *) token, token_len, &id);
 	if (rc != SORTITION_OK) {
-		zend_throw_exception_ex(SORTITION_VALUE_ERROR, (zend_long) rc, "sortition_seal_key_id(): %s",
+		zend_throw_exception_ex(zend_ce_value_error, (zend_long) rc, "sortition_seal_key_id(): %s",
 			sortition_last_error());
 		RETURN_THROWS();
 	}
@@ -1145,18 +1126,8 @@ PHP_MINFO_FUNCTION(sortition)
 	php_info_print_table_end();
 }
 
-#if PHP_VERSION_ID < 80000
-static const zend_module_dep sortition_deps[] = {
-	ZEND_MOD_REQUIRED("json")
-	ZEND_MOD_END
-};
-# define SORTITION_MODULE_HEADER STANDARD_MODULE_HEADER_EX, NULL, sortition_deps,
-#else
-# define SORTITION_MODULE_HEADER STANDARD_MODULE_HEADER,
-#endif
-
 zend_module_entry sortition_module_entry = {
-	SORTITION_MODULE_HEADER
+	STANDARD_MODULE_HEADER,
 	"sortition",
 	sortition_functions,
 	PHP_MINIT(sortition), NULL, NULL, NULL,
