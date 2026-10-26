@@ -5,7 +5,7 @@
   "type": "module",
   "main": "sortition.js",
   "types": "sortition.d.ts",
-  "files": ["sortition.js", "sortition.d.ts", "sortition.wasm"],
+  "files": ["sortition.js", "sortition.d.ts", "persist.js", "persist.d.ts", "sortition.wasm"],
   "scripts": {
     "build": "./build.sh",
     "test": "node --test test/*.test.mjs"
