@@ -22,10 +22,10 @@ export interface Stage {
   count: number;
 }
 
-export interface StageResult<T> {
+export interface StageResult {
   name: string;
   count: number;
-  winners: T[];
+  winners: Pick[];
 }
 
 export interface DrawCallOptions {
@@ -92,17 +92,11 @@ export interface Sortition {
   drawText(text: string, k: number, options?: DrawOptions): string[];
   /** JSON / YAML / TOML のテキストにある配列から k 個を抽選する（要素は JSON に正規化される） */
   drawData(text: string, k: number, options: DataOptions): unknown[];
-  /** 賞ごとに順番に抽選する（重複当選なし）。配列は要素そのまま、テキストは 1 行 1 候補 */
-  drawStages<T>(input: T[], stages: Stage[], options?: DrawOptions): StageResult<T>[];
-  drawStages(input: string, stages: Stage[], options?: DrawOptions): StageResult<string>[];
-  drawStages(input: string, stages: Stage[], options: DataOptions): StageResult<unknown>[];
   /**
-   * 0..n-1 を母集団に、呼ぶたびに続きから非復元抽出するセッションを作る。
-   * seed 指定ありなら、何回に分けて引いても draw(n, k1 + k2 + ..., { seed }) と同じ並びになる
+   * 賞ごとに順番に抽選する（重複当選なし）。合計人数を drawItems で一度に引いて、先頭から賞ごとに切り分ける。
+   * 候補は ID の昇順に並べてから引くので、同じ候補集合とシードなら、items の並びが違っても同じ候補が当選する
    */
-  createSession(n: number, options?: DrawOptions): Session;
-  /** Session.save() の出力から復元する。不正な状態は SortitionError（code -8） */
-  loadSession(state: string): Session;
+  drawStages(items: Candidate[], stages: Stage[], options?: DrawOptions): StageResult[];
   /**
    * 各候補の ID を items と同じ並びで返す。ID = SHA-256(接頭辞 || バイト列 || 出現番号) で、
    * 同じバイト列が複数あっても出現番号が混ざるので全候補で一意

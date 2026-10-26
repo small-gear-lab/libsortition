@@ -64,25 +64,34 @@ test('drawData: エラーには詳細が付く', () => {
   assert.throws(() => s.drawData('[1]', 1, { format: 'json', path: 'a\0b' }), RangeError);
 });
 
-test('drawStages: 賞ごとに切り分け、重複当選がない', () => {
-  const names = Array.from({ length: 30 }, (_, i) => `user${i}`);
+test('drawStages: 賞ごとに切り分け、重複当選がなく、候補の ID で引く', () => {
+  const people = Array.from({ length: 30 }, (_, i) => `user${i}`);
   const stages = [{ name: '副賞', count: 3 }, { name: '大賞', count: 1 }];
-  const r = s.drawStages(names, stages, { seed: 42 });
-  assert.deepEqual(r.map((x) => [x.name, x.winners.length]), [['副賞', 3], ['大賞', 1]]);
+  const r = s.drawStages(people, stages, { seed: 42 });
+  assert.deepEqual(r.map((x) => [x.name, x.count, x.winners.length]), [['副賞', 3, 3], ['大賞', 1, 1]]);
   const flat = r.flatMap((x) => x.winners);
-  assert.equal(new Set(flat).size, 4);
-  assert.deepEqual(flat, s.draw(30, 4, { seed: 42 }).map((i) => names[i]));
-  assert.deepEqual(r, s.drawStages(names, stages, { seed: 42 }));
+  assert.equal(new Set(flat.map((p) => p.id)).size, 4);
+  // 合計 4 人を drawItems で一度に引いて、先頭から切り分けたものと一致する
+  assert.deepEqual(flat, s.drawItems(people, 4, { seed: 42 }));
+  assert.ok(flat.every((p) => people[p.index] !== undefined));
+  assert.deepEqual(r, s.drawStages(people, stages, { seed: 42 }));
+  // 候補の並びを変えても、同じ候補が当選する
+  const shuffled = [...people].reverse();
+  const again = s.drawStages(shuffled, stages, { seed: 42 });
+  assert.deepEqual(again.map((x) => x.winners.map((p) => p.id)), r.map((x) => x.winners.map((p) => p.id)));
+  assert.deepEqual(again.flatMap((x) => x.winners.map((p) => shuffled[p.index])), r.flatMap((x) => x.winners.map((p) => people[p.index])));
 });
 
-test('drawStages: 配列の要素はそのまま、テキストと構造化データにも使える', () => {
-  const objs = [{ id: 1 }, { id: 2 }, { id: 3 }];
-  const r = s.drawStages(objs, [{ name: 'a', count: 2 }, { name: 'b', count: 1 }], { seed: 1 });
-  assert.ok(r.flatMap((x) => x.winners).every((w) => objs.includes(w)));
-  assert.equal(s.drawStages('a\nb\nc', [{ name: 'x', count: 3 }])[0].winners.length, 3);
-  assert.equal(s.drawStages('- 1\n- 2\n- 3\n', [{ name: 'x', count: 1 }, { name: 'y', count: 1 }], { format: 'yaml' }).length, 2);
-  assert.throws(() => s.drawStages(['a'], [{ name: 'x', count: 2 }]), (e) => e.code === -1);
+test('drawStages: 候補は文字列・バイナリ。空の賞や賞なし、エラー', () => {
+  const items = ['a', 'b', new Uint8Array([0, 255]), 'd'];
+  assert.equal(s.drawStages(items, [{ name: 'x', count: 4 }])[0].winners.length, 4);
+  assert.deepEqual(s.drawStages(items, []), []);
+  assert.deepEqual(s.drawStages(items, [{ name: '空', count: 0 }])[0].winners, []);
+  assert.throws(() => s.drawStages(['a'], [{ name: 'x', count: 2 }]), (e) => e instanceof s.SortitionError && e.code === -1);
   assert.throws(() => s.drawStages(['a'], [{ name: 'x', count: -1 }]), RangeError);
+  assert.throws(() => s.drawStages(['a'], [{ name: 'x', count: 1.5 }]), RangeError);
+  assert.throws(() => s.drawStages(['a'], [{ name: 1, count: 1 }]), TypeError);
+  assert.throws(() => s.drawStages([1], [{ name: 'x', count: 1 }]), TypeError);
 });
 
 test('seedFromText: SHA-256 の先頭 8 バイト（リトルエンディアン）', () => {

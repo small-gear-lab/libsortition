@@ -22,10 +22,10 @@ export interface Stage {
   count: number;
 }
 
-export interface StageResult<T> {
+export interface StageResult {
   name: string;
   count: number;
-  winners: T[];
+  winners: Pick[];
 }
 
 export interface DrawCallOptions {
@@ -117,10 +117,11 @@ export function draw(n: number, k: number, options?: DrawOptions): number[];
 export function drawText(text: string, k: number, options?: DrawOptions): string[];
 /** JSON / YAML / TOML のテキストにある配列から k 個を抽選する（要素は JSON に正規化される） */
 export function drawData(text: string, k: number, options: DataOptions): unknown[];
-/** 賞ごとに順番に抽選する（重複当選なし）。配列は要素そのまま、テキストは 1 行 1 候補 */
-export function drawStages<T>(input: T[], stages: Stage[], options?: DrawOptions): StageResult<T>[];
-export function drawStages(input: string, stages: Stage[], options?: DrawOptions): StageResult<string>[];
-export function drawStages(input: string, stages: Stage[], options: DataOptions): StageResult<unknown>[];
+/**
+ * 賞ごとに順番に抽選する（重複当選なし）。合計人数を drawItems で一度に引いて、先頭から賞ごとに切り分ける。
+ * 候補は ID の昇順に並べてから引くので、同じ候補集合とシードなら、items の並びが違っても同じ候補が当選する
+ */
+export function drawStages(items: Candidate[], stages: Stage[], options?: DrawOptions): StageResult[];
 /** 文字列から seed（SHA-256 の先頭 8 バイト、リトルエンディアン）を決める */
 export function seedFromText(text: string): bigint;
 /** 候補テキストを抽選と同じ規則で正規化する */

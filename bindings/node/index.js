@@ -9,7 +9,7 @@
 //   lot.draw(3); const saved = lot.save();         // 保存して…
 //   s.loadSession(saved).draw(2);                  // …あとで続きから引く
 //   s.drawItems(["alice", Buffer.from([1, 2])], 1, { seed: 1n }); // [{ index, id }]（任意のバイト列）
-//   s.drawStages(["a", "b", "c", "d"], [{ name: "副賞", count: 3 }, { name: "大賞", count: 1 }]);
+//   s.drawStages(["a", "b", "c", "d"], [{ name: "副賞", count: 3 }, { name: "大賞", count: 1 }]); // [{ name, count, winners: [{ index, id }] }]
 const crypto = require('node:crypto');
 const native = require('./build/Release/sortition_node.node');
 
@@ -283,25 +283,23 @@ function sealKeyId(token) {
 
 /**
  * 賞ごとに順番に抽選する（重複当選なし）。
- * 合計人数を重複なしで引いて、先頭から賞ごとに切り分ける。これは「1 つ目の賞を引き、
- * 残りから次の賞を引く」と同じ確率になる。
+ * 合計人数を drawItems で一度に引いて、先頭から賞ごとに切り分ける。これは「1 つ目の賞を引き、
+ * 残りから次の賞を引く」と同じ確率になる。候補は ID の昇順に並べてから引くので、同じ候補集合と
+ * シードなら、items の並びが違っても同じ候補が当選する。
  *
- * input は配列（要素はそのまま返る）/ 1 行 1 候補のテキスト / format 指定時は構造化データのテキスト。
- * 戻り値は [{ name, count, winners }]。
+ * items は候補（string / Buffer / ArrayBuffer / TypedArray）、stages は引く順の [{ name, count }]。
+ * 合計人数が候補数を超えれば SortitionError。戻り値は [{ name, count, winners: [{ index, id }] }]。
  */
-function drawStages(input, stages, { seed, format, path } = {}) {
+function drawStages(items, stages, { seed } = {}) {
   const counts = stages.map((s, i) => {
+    if (typeof s?.name !== 'string') throw new TypeError(`stages[${i}].name must be a string`);
     if (!Number.isInteger(s.count) || s.count < 0) throw new RangeError(`stages[${i}].count must be a non-negative integer`);
     return s.count;
   });
-  const total = counts.reduce((a, b) => a + b, 0);
-  let picked;
-  if (Array.isArray(input)) picked = draw(input.length, total, { seed }).map((i) => input[i]);
-  else if (format !== undefined) picked = drawData(input, total, { format, path, seed });
-  else picked = drawText(input, total, { seed });
+  const picks = drawItems(items, counts.reduce((a, b) => a + b, 0), { seed });
   let offset = 0;
   return stages.map((s, i) => {
-    const winners = picked.slice(offset, offset + counts[i]);
+    const winners = picks.slice(offset, offset + counts[i]);
     offset += counts[i];
     return { name: s.name, count: counts[i], winners };
   });
