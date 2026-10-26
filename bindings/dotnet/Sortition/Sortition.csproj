@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Sortition</RootNamespace>
+    <AssemblyName>Sortition</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <PackageId>Sortition</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Fair, repeatable and verifiable random lotteries (draws without replacement). A .NET binding of libsortition; it loads the native library.</Description>
+    <Authors>Small Gear Lab; Marie</Authors>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/small-gear-lab/libsortition</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/small-gear-lab/libsortition</RepositoryUrl>
+    <PackageTags>lottery;random;sampling;sortition;fair;verifiable;reproducible</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+</Project>
