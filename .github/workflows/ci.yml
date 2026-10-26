@@ -27,6 +27,8 @@ jobs:
           components: clippy
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - name: Every version number is the same
+        run: python3 .github/scripts/version.py check
       - run: cargo test --locked -p sortition
       - run: cargo test --locked -p sortition --no-default-features
       - run: cargo test --locked -p sortition-cli
