@@ -8,12 +8,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{SORTITION_ERR_INVALID, SORTITION_OK};
 
-/// seed の文字列（のバイト列）の SHA-256。コミット値になる。
+/// The SHA-256 of a seed string (its bytes). This is the commitment to publish before the draw.
 pub fn seed_digest(text: &[u8]) -> [u8; 32] {
     Sha256::digest(text).into()
 }
 
-/// seed の文字列から seed（`u64`）を決める。
+/// The seed (a `u64`) of a seed string: the first 8 bytes of its SHA-256, read as little-endian.
 pub fn seed_from_text(text: &str) -> u64 {
     seed_from_digest(&seed_digest(text.as_bytes()))
 }
@@ -28,6 +28,7 @@ fn seed_from_digest(digest: &[u8; 32]) -> u64 {
 /// # Safety
 /// `text` は `len` バイト読める領域、`out_seed` は書き込み可能な `u64`、
 /// `out_digest` は NULL か 32 バイト書ける領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_seed_from_text(
     text: *const u8,

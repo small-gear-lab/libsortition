@@ -1,7 +1,56 @@
-//! 無作為抽選コア。
+//! Fair, repeatable and verifiable random lotteries: draw `k` of `n` candidates without replacement.
 //!
-//! `0..n` から重複なしで `k` 個を選ぶ（非復元抽出）。結果は選ばれた順に返す。
-//! シード指定なしなら OS の乱数源、指定ありなら同じシードで同じ結果になる。
+//! The same candidates and the same seed give the same winners, in every language libsortition has
+//! bindings for and in its `sortition` command. [`docs/SPEC.md`](https://github.com/small-gear-lab/libsortition/blob/main/docs/SPEC.md)
+//! writes the algorithm down exactly, with test vectors and a reference implementation.
+//!
+//! # Drawing candidates
+//!
+//! A candidate is any byte string. Each one gets an ID that does not depend on its position, and the
+//! draw works on the IDs in sorted order, so **the winners do not depend on the order of your list**.
+//! A seed string gives a seed (and the commitment you can publish before the draw: its SHA-256).
+//!
+//! ```
+//! use sortition::{draw_items, seed_from_text};
+//!
+//! let people: Vec<&[u8]> = vec![b"alice", b"bob", b"carol", b"dave"];
+//! let seed = seed_from_text("my seed");
+//! let picks = draw_items(&people, 2, Some(seed)).unwrap();
+//!
+//! let winners: Vec<&[u8]> = picks.iter().map(|p| people[p.index as usize]).collect();
+//! assert_eq!(winners, [b"dave" as &[u8], b"bob"]);
+//! ```
+//!
+//! [`candidate_ids`] and [`set_fingerprint`] give the IDs and the fingerprint of a set of candidates;
+//! publish the fingerprint with the commitment, and anyone can check afterwards that the candidates
+//! were the same.
+//!
+//! # Sessions
+//!
+//! [`Session`] and [`ItemSession`] draw in steps and continue where they stopped. Their state can be
+//! saved as JSON and restored, a retried request with an idempotency key never draws twice, and
+//! [`Session::seal`] turns a state into a token that a party you do not trust can keep without being
+//! able to read or change it.
+//!
+//! ```
+//! use sortition::Session;
+//!
+//! let mut session = Session::new(100, Some(1)).unwrap();
+//! let first = session.draw(3).unwrap();
+//!
+//! // Save it, and continue later (even in another process): the draw goes on as if never interrupted.
+//! let mut restored = Session::load(&session.save()).unwrap();
+//! let next = restored.draw(2).unwrap();
+//! assert_eq!([first, next].concat(), sortition::draw(100, 5, Some(1)).unwrap());
+//! ```
+//!
+//! # Two ways to draw
+//!
+//! [`draw`], [`draw_lines`] and [`draw_data`] return **positions** in the list as you gave it, so a
+//! reordered list gives different winners. Use the candidate functions above when that matters.
+//!
+//! The `yaml` and `toml` features (on by default) add drawing from YAML and TOML data. The functions
+//! marked `extern "C"` are the C ABI; it is documented in `sortition.h`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,39 +71,41 @@ mod vectors;
 pub use items::{candidate_ids, draw_items, set_fingerprint, Id, ItemSession, Pick};
 pub use seed::{seed_digest, seed_from_text};
 pub use seal::{open as open_sealed, seal as seal_state, token_key_id};
-pub use session::{Session, StateError};
+pub use seal::Key;
+pub use session::{Drawn, Session, StateError, MAX_KEY_LEN};
 pub use data::{
     draw_data, DataError, SORTITION_FORMAT_JSON, SORTITION_FORMAT_TOML, SORTITION_FORMAT_YAML,
 };
 
-/// ライブラリのバージョン
+/// The version of the library.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// 抽選のアルゴリズムの版の名前（docs/SPEC.md）。seed の決め方、乱数、候補の ID と並べ方、引き方、賞の切り分けが、
-/// 同じ入力に同じ結果を返す約束になっている。結果が変わる変更をするときは、この名前を新しくする。
-/// 抽選の記録に入れておくと、あとで別の版のアルゴリズムで検証してしまうのを防げる。
+/// The name of the version of the draw algorithm (see `docs/SPEC.md`). The seed rule, the random streams,
+/// candidate IDs and their order, the way numbers are drawn and the way stages are cut promise to give the
+/// same result for the same input. A change that could give a different result gets a new name.
+/// Put it in the record of a draw, so that the record is never checked with the wrong algorithm later.
 pub const ALGORITHM: &str = "libsortition-draw/1";
 
-/// 成功
+/// Success.
 pub const SORTITION_OK: i32 = 0;
-/// 引数が不正（`k > n`、`out` が NULL など）
+/// An invalid argument (`k > n`, a NULL `out`, ...).
 pub const SORTITION_ERR_INVALID: i32 = -1;
-/// OS 乱数の取得に失敗
+/// The operating system's randomness could not be read.
 pub const SORTITION_ERR_RNG: i32 = -2;
-/// 入力テキストが UTF-8 として不正
+/// The input text is not valid UTF-8.
 pub const SORTITION_ERR_UTF8: i32 = -3;
-/// 構造化データの構文エラー（YAML のエイリアス・独自タグ・複数ドキュメントなども含む）
+/// A syntax error in structured data (this includes YAML aliases, custom tags and multiple documents).
 pub const SORTITION_ERR_PARSE: i32 = -4;
-/// `path` が見つからない、またはその位置が配列でない
+/// The `path` was not found, or what it points to is not an array.
 pub const SORTITION_ERR_PATH: i32 = -5;
-/// 未知の形式、またはビルド時に無効化された形式
+/// An unknown format, or one that is disabled in this build.
 pub const SORTITION_ERR_FORMAT: i32 = -6;
-/// 内部エラー（パニックを FFI の境界で捕捉した）
+/// An internal error (a panic was caught at the FFI boundary).
 pub const SORTITION_ERR_INTERNAL: i32 = -7;
 
-/// 保存したセッション状態が不正（形式・バージョン・中身の矛盾）
+/// An invalid saved session state or sealed token (the format, the version or an inconsistency).
 pub const SORTITION_ERR_STATE: i32 = -8;
-/// 羃等キーが、別の内容のリクエスト（別の `k`）で既に使われている
+/// The idempotency key was already used with a different request (another `k`).
 pub const SORTITION_ERR_CONFLICT: i32 = -9;
 
 thread_local! {
@@ -168,7 +219,11 @@ impl Source {
     }
 }
 
-/// `0..n` から `k` 個を重複なしで抽選する。メモリは O(k)。
+/// Draws `k` distinct numbers from `0..n`, in the order drawn. It needs O(k) memory.
+///
+/// With a seed the result is repeatable (xoshiro256\*\*); without one the operating system's randomness is used.
+/// The numbers are **positions**: a reordered list of candidates gives different winners.
+/// Fails with [`SORTITION_ERR_INVALID`] when `k > n`.
 pub fn draw(n: u32, k: u32, seed: Option<u64>) -> Result<Vec<u32>, i32> {
     if k > n {
         return Err(SORTITION_ERR_INVALID);
@@ -198,6 +253,7 @@ pub fn draw(n: u32, k: u32, seed: Option<u64>) -> Result<Vec<u32>, i32> {
 ///
 /// # Safety
 /// `seed` は NULL か有効な `u64` へのポインタ、`out` は `k` 要素以上の書き込み可能領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_draw(n: u32, k: u32, seed: *const u64, out: *mut u32) -> i32 {
     if out.is_null() && k > 0 {
@@ -215,9 +271,10 @@ pub unsafe extern "C" fn sortition_draw(n: u32, k: u32, seed: *const u64, out: *
     }
 }
 
-/// テキスト（1 行 1 候補）から `k` 個を重複なしで抽選し、選ばれた候補を返す。
+/// Draws `k` lines from text (one candidate per line) without replacement and returns the chosen lines.
 ///
-/// 各行は前後の空白を除き、空行は候補に含めない。同じ文字列の行は別の候補として数える。
+/// Each line is trimmed of surrounding white space, and empty lines are not candidates. Identical lines
+/// are separate candidates. Like [`draw`], this works on positions in the text.
 pub fn draw_lines(text: &str, k: u32, seed: Option<u64>) -> Result<Vec<&str>, i32> {
     let items: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     let n = u32::try_from(items.len()).map_err(|_| SORTITION_ERR_INVALID)?;
@@ -233,6 +290,7 @@ pub fn draw_lines(text: &str, k: u32, seed: Option<u64>) -> Result<Vec<&str>, i3
 /// # Safety
 /// `text` は `len` バイト読める領域、`out` は `out_cap` バイト書ける領域、
 /// `seed` は NULL か有効な `u64` へのポインタであること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_draw_text(
     text: *const u8,
@@ -277,6 +335,7 @@ pub unsafe extern "C" fn sortition_draw_text(
 /// # Safety
 /// `text` は `len` バイト読める領域、`path` は NULL か NUL 終端文字列、
 /// `seed` は NULL か有効な `u64` へのポインタ、`out` は書き込み可能な `char*` 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_draw_data(
     format: i32,
@@ -333,6 +392,7 @@ pub unsafe extern "C" fn sortition_draw_data(
 ///
 /// # Safety
 /// `s` は `sortition_draw_data` が `*out` に返したポインタ（未解放）か NULL であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_free(s: *mut c_char) {
     if !s.is_null() {
@@ -342,12 +402,14 @@ pub unsafe extern "C" fn sortition_free(s: *mut c_char) {
 
 /// 同じスレッドで最後に失敗した `sortition_draw_data` の詳細メッセージ（NUL 終端 UTF-8）。
 /// 次にこのスレッドで `sortition_draw_data` を呼ぶまで有効。解放不要。
+#[doc(hidden)]
 #[no_mangle]
 pub extern "C" fn sortition_last_error() -> *const c_char {
     LAST_ERROR.with(|e| e.borrow().as_ptr())
 }
 
 /// ライブラリのバージョン（NUL 終端、静的領域。解放不要）
+#[doc(hidden)]
 #[no_mangle]
 pub extern "C" fn sortition_version() -> *const std::os::raw::c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()

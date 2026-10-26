@@ -40,7 +40,7 @@ fn restore(map: &mut HashMap<u32, u32>, key: u32, old: Option<u32>) {
     };
 }
 
-/// 羃等キーの長さの上限（バイト）
+/// The longest idempotency key, in bytes.
 pub const MAX_KEY_LEN: usize = 128;
 
 /// 羃等キー付きで引いた 1 回分の記録。`drawn[start..start + count]` がそのときの結果。
@@ -50,14 +50,16 @@ struct Call {
     count: u32,
 }
 
-/// `draw_keyed` の結果
+/// The result of [`Session::draw_keyed`].
 #[derive(Debug, PartialEq, Eq)]
 pub struct Drawn {
     pub picks: Vec<u32>,
-    /// 同じキーの前回の結果をそのまま返した（状態は変わっていない）
+    /// The earlier result for the same key was returned, and the state did not change.
     pub replayed: bool,
 }
 
+/// A draw over `n` positions without replacement that can continue where it stopped, be saved as JSON and
+/// restored. See the crate documentation for an example.
 pub struct Session {
     /// セッションの識別子（作成時に OS から取った 16 バイト）
     id: [u8; 16],
@@ -74,7 +76,8 @@ pub struct Session {
 }
 
 impl Session {
-    /// シード指定なしなら OS から鍵を取る。取れなければ `SORTITION_ERR_RNG`。
+    /// Creates a session over `n` positions. Without a seed it takes a key from the operating system
+    /// (and fails with `SORTITION_ERR_RNG` if it cannot); with a seed it is repeatable.
     pub fn new(n: u32, seed: Option<u64>) -> Result<Self, i32> {
         let src = match seed {
             Some(s) => Source::Seeded(Xoshiro256::from_seed(s)),
@@ -85,43 +88,43 @@ impl Session {
         Ok(Self { id, revision: 0, calls: Vec::new(), n, src, drawn: Vec::new(), swapped: HashMap::new() })
     }
 
-    /// セッションの識別子（小文字 16 進 32 文字）
+    /// The session id: 32 lowercase hex characters, taken from the operating system when it was created.
     pub fn id(&self) -> String {
         hex::encode(&self.id)
     }
 
-    /// 状態を変えた `draw` の回数。保存側は「読んだ revision のときだけ更新する」ことで、
-    /// 同じ状態から別々に進めた更新の上書きを防げる。
+    /// The number of draws that changed the state. A store can update a record only when its revision is
+    /// the one that was read, so that two updates made from the same state do not overwrite each other.
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// 母集団の大きさ `n`
+    /// The number of positions, `n`.
     pub fn population(&self) -> u32 {
         self.n
     }
 
-    /// まだ引いていない数
+    /// How many are not drawn yet.
     pub fn remaining(&self) -> u32 {
         self.n - self.drawn.len() as u32
     }
 
-    /// ここまでに引いた結果（引いた順）
+    /// The results so far, in the order drawn.
     pub fn drawn(&self) -> &[u32] {
         &self.drawn
     }
 
-    /// 続きから `k` 個引く。`k` が残りを超えるなら何も消費せず `SORTITION_ERR_INVALID`。
-    /// 途中で失敗した場合も状態は呼び出し前に戻る。
+    /// Draws the next `k`. Fails with `SORTITION_ERR_INVALID` if `k` is more than what is left. A call that
+    /// fails leaves the state as it was.
     pub fn draw(&mut self, k: u32) -> Result<Vec<u32>, i32> {
         Ok(self.draw_keyed(k, None)?.picks)
     }
 
-    /// 羃等キー付きで続きから `k` 個引く。
+    /// Draws the next `k` with an idempotency key.
     ///
-    /// 同じ `key` と同じ `k` の再送は、状態を変えずに前回の結果をそのまま返す（`replayed`）。
-    /// 同じ `key` で別の `k` なら `SORTITION_ERR_CONFLICT`。キーは 1〜128 バイト。
-    /// `k == 0` は何もせず、キーも記録しない。失敗した呼び出しは何も残さない。
+    /// Sending the same `key` with the same `k` again does not change the state and returns the earlier
+    /// result (`replayed`). The same `key` with another `k` fails with `SORTITION_ERR_CONFLICT`. A key is 1
+    /// to 128 bytes. `k == 0` does nothing and records no key. A call that fails leaves nothing behind.
     pub fn draw_keyed(&mut self, k: u32, key: Option<&str>) -> Result<Drawn, i32> {
         if let Some(key) = key {
             if key.is_empty() || key.len() > MAX_KEY_LEN {
@@ -182,9 +185,11 @@ impl Session {
         Ok(())
     }
 
-    /// 状態を JSON 文字列に保存する。
+    /// Saves the state as a JSON string.
     ///
-    /// 64 ビット値は JS で丸められないよう 10 進文字列にしている。
+    /// **It contains the internal state of the random generator**: whoever has it can predict the next winners
+    /// and can forge a state, so give it only to parties you trust (see [`Session::seal`]). Numbers beyond
+    /// 2^53 are written as decimal strings, so that JavaScript does not round them.
     pub fn save(&self) -> String {
         let rng = match &self.src {
             Source::Seeded(r) => json!({
@@ -214,20 +219,23 @@ impl Session {
         .to_string()
     }
 
-    /// 状態に封をしてトークンにする（`save()` を `seal` で包む）。形式は `seal` のモジュールを参照。
-    /// 信頼できない相手（ブラウザなど）に預けるときは、`save()` ではなくこちらを使う。
+    /// Seals the saved state into a token (XChaCha20-Poly1305). Use this instead of [`Session::save`] to
+    /// hand a state to a party you do not trust (a browser, for example): only the holder of the 32-byte
+    /// `key` can open it, and any change makes it unopenable. `key_id` (0 to 255) labels the key for rotation.
     pub fn seal(&self, key: &crate::seal::Key, key_id: u8) -> Result<String, i32> {
         crate::seal::seal(self.save().as_bytes(), key, key_id)
     }
 
-    /// `seal` のトークンから復元する。形式の不正・鍵違い・改ざん・中身の矛盾は `StateError`。
+    /// Restores a session from a token made by [`Session::seal`]. A malformed token, a wrong key,
+    /// tampering and an inconsistent state all give a [`StateError`].
     pub fn unseal(token: &str, key: &crate::seal::Key) -> Result<Self, StateError> {
         let plain = crate::seal::open(token, key)?;
         let text = String::from_utf8(plain).map_err(|_| StateError("sealed state is not UTF-8".to_string()))?;
         Self::load(&text)
     }
 
-    /// `save` の出力から復元する。中身が矛盾していれば `SORTITION_ERR_STATE`。
+    /// Restores a session from the output of [`Session::save`]. A state that is malformed or inconsistent
+    /// gives a [`StateError`].
     pub fn load(text: &str) -> Result<Self, StateError> {
         let bad = |m: &str| StateError(m.to_string());
         let v: Value = serde_json::from_str(text).map_err(|e| StateError(format!("invalid state: {e}")))?;
@@ -333,6 +341,7 @@ impl Session {
     }
 }
 
+/// A saved state or sealed token that could not be used. The text says why.
 #[derive(Debug)]
 pub struct StateError(pub String);
 
@@ -342,6 +351,7 @@ pub struct StateError(pub String);
 ///
 /// # Safety
 /// `seed` は NULL か有効な `u64` へのポインタ、`out` は書き込み可能なポインタ 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_new(n: u32, seed: *const u64, out: *mut *mut Session) -> i32 {
     if out.is_null() {
@@ -362,6 +372,7 @@ pub unsafe extern "C" fn sortition_session_new(n: u32, seed: *const u64, out: *m
 /// # Safety
 /// `s` は有効なセッション、`out` は `k` 要素以上の書き込み可能領域であること。
 /// 同じセッションを複数スレッドから同時に使ってはいけない。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_draw(s: *mut Session, k: u32, out: *mut u32) -> i32 {
     if s.is_null() || (out.is_null() && k > 0) {
@@ -399,6 +410,7 @@ pub(crate) unsafe fn key_arg<'a>(key: *const c_char) -> Result<Option<&'a str>, 
 /// # Safety
 /// `s` は有効なセッション、`key` は NULL か NUL 終端文字列、`out` は `k` 要素以上の書き込み可能領域、
 /// `replayed` は NULL か書き込み可能な `int32_t` であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_draw_keyed(
     s: *mut Session,
@@ -435,6 +447,7 @@ pub unsafe extern "C" fn sortition_session_draw_keyed(
 ///
 /// # Safety
 /// `s` は NULL か有効なセッションであること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_revision(s: *const Session) -> u64 {
     if s.is_null() {
@@ -448,6 +461,7 @@ pub unsafe extern "C" fn sortition_session_revision(s: *const Session) -> u64 {
 ///
 /// # Safety
 /// `s` は有効なセッション、`out` は 33 バイト書ける領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_id(s: *const Session, out: *mut u8) -> i32 {
     if s.is_null() || out.is_null() {
@@ -466,6 +480,7 @@ pub(crate) unsafe fn write_id(id: String, out: *mut u8) {
 ///
 /// # Safety
 /// `s` は NULL か有効なセッションであること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_remaining(s: *const Session) -> u32 {
     if s.is_null() {
@@ -479,6 +494,7 @@ pub unsafe extern "C" fn sortition_session_remaining(s: *const Session) -> u32 {
 ///
 /// # Safety
 /// `s` は NULL か有効なセッションであること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_drawn_count(s: *const Session) -> u32 {
     if s.is_null() {
@@ -492,6 +508,7 @@ pub unsafe extern "C" fn sortition_session_drawn_count(s: *const Session) -> u32
 ///
 /// # Safety
 /// `s` は有効なセッション、`out` は書き込み可能な `char*` 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_save(s: *const Session, out: *mut *mut c_char) -> i32 {
     if out.is_null() {
@@ -518,6 +535,7 @@ pub unsafe extern "C" fn sortition_session_save(s: *const Session, out: *mut *mu
 ///
 /// # Safety
 /// `text` は `len` バイト読める領域、`out` は書き込み可能なポインタ 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_load(text: *const u8, len: usize, out: *mut *mut Session) -> i32 {
     if out.is_null() {
@@ -556,6 +574,7 @@ pub unsafe extern "C" fn sortition_session_load(text: *const u8, len: usize, out
 ///
 /// # Safety
 /// `s` は有効なセッション、`key` は 32 バイト読める領域、`out` は書き込み可能な `char*` 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_seal(s: *const Session, key: *const u8, key_id: u8, out: *mut *mut c_char) -> i32 {
     if out.is_null() {
@@ -583,6 +602,7 @@ pub unsafe extern "C" fn sortition_session_seal(s: *const Session, key: *const u
 ///
 /// # Safety
 /// `token` は `len` バイト読める領域、`key` は 32 バイト読める領域、`out` は書き込み可能なポインタ 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_unseal(token: *const u8, len: usize, key: *const u8, out: *mut *mut Session) -> i32 {
     if out.is_null() {
@@ -616,6 +636,7 @@ pub unsafe extern "C" fn sortition_session_unseal(token: *const u8, len: usize, 
 ///
 /// # Safety
 /// `s` は `sortition_session_new` / `sortition_session_load` が返した未解放のポインタか NULL であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_session_free(s: *mut Session) {
     if !s.is_null() {

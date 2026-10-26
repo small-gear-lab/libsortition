@@ -6,6 +6,7 @@
 
 /// ホスト側から呼び出し用のバッファを確保する（WASM のようにホストがリニアメモリへ
 /// 直接書き込む環境向け）。`sortition_dealloc(ptr, len)` で同じ `len` を渡して解放する。
+#[doc(hidden)]
 #[no_mangle]
 pub extern "C" fn sortition_alloc(len: usize) -> *mut u8 {
     let mut v = Vec::<u8>::with_capacity(len.max(1));
@@ -18,6 +19,7 @@ pub extern "C" fn sortition_alloc(len: usize) -> *mut u8 {
 ///
 /// # Safety
 /// `ptr` は `sortition_alloc(len)` が返した未解放のポインタ（`len` も同じ値）か NULL であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_dealloc(ptr: *mut u8, len: usize) {
     if !ptr.is_null() {

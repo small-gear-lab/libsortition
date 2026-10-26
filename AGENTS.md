@@ -98,6 +98,6 @@ Every folder has a `manifest.json` with the SHA-384 of its files. `gh-pages` is 
 
 ## Style
 
-- Comments in `core/` and the bindings are written in Japanese; follow the language of the surrounding code. Public documentation (READMEs) exists in English and Japanese and both must be updated together.
+- Comments inside the code of `core/` and the bindings are written in Japanese; follow the language of the surrounding code. What users read is in English: the documentation of the public Rust API (the examples in `core/src/lib.rs` run as doc tests, and CI builds the docs with warnings denied), the C header, `examples/`, the package READMEs and `docs/SPEC.md`. The `extern "C"` functions are `#[doc(hidden)]` in the Rust docs: their documentation is the header. Public documentation (READMEs) exists in English and Japanese and both must be updated together.
 - Core code avoids `unsafe` except at the FFI boundary; each exported `unsafe extern "C"` function states its safety conditions. Panics must not cross the FFI boundary where parsing or untrusted input is involved (`catch_unwind`).
 - Keep dependencies few. Current ones: `getrandom`, `serde_json`, `saphyr` and `toml` (optional), `sha2`, `chacha20`, `chacha20poly1305`.

@@ -20,21 +20,25 @@ use crate::{
     SORTITION_ERR_UTF8, SORTITION_OK,
 };
 
-/// 候補の ID（SHA-256）
+/// The ID of a candidate: 32 bytes of SHA-256 that do not depend on its position (see `docs/SPEC.md`).
 pub type Id = [u8; 32];
 
 const ID_PREFIX: &[u8] = b"libsortition/candidate/v1\0";
 const SET_PREFIX: &[u8] = b"libsortition/set/v1\0";
 const STATE_VERSION: u64 = 1;
 
-/// 当選した候補。`index` は入力配列の中の位置、`id` はその候補の ID。
+/// A winner: `index` is its position in the list you passed, and `id` is its ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pick {
     pub index: u32,
     pub id: Id,
 }
 
-/// 各候補の ID を入力と同じ並びで返す。
+/// The ID of each candidate, in the order of the input.
+///
+/// An ID is `SHA-256("libsortition/candidate/v1" || 0x00 || bytes || LE64(occurrence))`, where `occurrence`
+/// is how many candidates with exactly the same bytes came before it. Identical entries stay separate
+/// candidates and every ID is different.
 pub fn candidate_ids(items: &[&[u8]]) -> Vec<Id> {
     let mut seen: HashMap<&[u8], u64> = HashMap::with_capacity(items.len());
     items
@@ -51,7 +55,8 @@ pub fn candidate_ids(items: &[&[u8]]) -> Vec<Id> {
         .collect()
 }
 
-/// 候補集合の指紋。ID を昇順に並べたものの SHA-256 なので、入力の並びに依らない。
+/// The fingerprint of a set of candidates: the SHA-256 of their IDs in sorted order, so it does not depend
+/// on the order of the input. Publish it with the commitment before the draw.
 pub fn set_fingerprint(ids: &[Id]) -> Id {
     let mut sorted: Vec<&Id> = ids.iter().collect();
     sorted.sort_unstable();
@@ -90,7 +95,9 @@ fn canonical_order(items: &[&[u8]]) -> Result<(Vec<u32>, Vec<Id>), i32> {
     Ok((order, sorted))
 }
 
-/// バイト列の候補に対する抽選セッション。
+/// A session over a fixed set of candidates (arbitrary byte strings). It draws without replacement, can
+/// continue where it stopped, and can be saved and restored together with the same set of candidates (in
+/// any order). The winners do not depend on the order of the list.
 pub struct ItemSession {
     inner: Session,
     /// 昇順の位置 → 入力の位置
@@ -101,22 +108,24 @@ pub struct ItemSession {
 }
 
 impl ItemSession {
-    /// 候補集合を固定してセッションを作る。候補が 2^32 個以上なら `SORTITION_ERR_INVALID`。
+    /// Creates a session over the candidates. Fails with `SORTITION_ERR_INVALID` for 2^32 candidates or more.
     pub fn new(items: &[&[u8]], seed: Option<u64>) -> Result<Self, i32> {
         let (order, ids) = canonical_order(items)?;
         let fingerprint = fingerprint_of_sorted(ids.iter());
         Ok(Self { inner: Session::new(ids.len() as u32, seed)?, order, ids, fingerprint })
     }
 
+    /// How many candidates are not drawn yet.
     pub fn remaining(&self) -> u32 {
         self.inner.remaining()
     }
 
+    /// How many candidates were drawn.
     pub fn drawn_count(&self) -> u32 {
         self.inner.drawn().len() as u32
     }
 
-    /// 候補集合の指紋
+    /// The fingerprint of the set of candidates.
     pub fn fingerprint(&self) -> Id {
         self.fingerprint
     }
@@ -125,34 +134,38 @@ impl ItemSession {
         Pick { index: self.order[pos as usize], id: self.ids[pos as usize] }
     }
 
-    /// これまでに引いた候補（引いた順）
+    /// The winners so far, in the order drawn.
     pub fn drawn(&self) -> Vec<Pick> {
         self.inner.drawn().iter().map(|&p| self.pick(p)).collect()
     }
 
-    /// 続きから `k` 個引く。`k` が残りを超えるなら状態を変えずに `SORTITION_ERR_INVALID`。
+    /// Draws the next `k`. Fails with `SORTITION_ERR_INVALID`, without changing the state, if `k` is more
+    /// than what is left.
     pub fn draw(&mut self, k: u32) -> Result<Vec<Pick>, i32> {
         Ok(self.inner.draw(k)?.into_iter().map(|p| self.pick(p)).collect())
     }
 
-    /// 羃等キー付きで続きから `k` 個引く。同じキーと同じ `k` の再送は、状態を変えずに前回の結果を返す
-    /// （2 つ目の値が `true`）。詳しくは `Session::draw_keyed`。
+    /// Draws the next `k` with an idempotency key. Sending the same key with the same `k` again returns the
+    /// earlier result without changing the state (the second value is then `true`). See
+    /// [`Session::draw_keyed`].
     pub fn draw_keyed(&mut self, k: u32, key: Option<&str>) -> Result<(Vec<Pick>, bool), i32> {
         let d = self.inner.draw_keyed(k, key)?;
         Ok((d.picks.into_iter().map(|p| self.pick(p)).collect(), d.replayed))
     }
 
-    /// セッションの識別子（小文字 16 進 32 文字）
+    /// The session id: 32 lowercase hex characters.
     pub fn id(&self) -> String {
         self.inner.id()
     }
 
-    /// 状態を変えた `draw` の回数
+    /// The number of draws that changed the state.
     pub fn revision(&self) -> u64 {
         self.inner.revision()
     }
 
-    /// 状態を JSON 文字列に保存する。引いた候補の ID（`drawn`）と候補集合の指紋を含む。
+    /// Saves the state as a JSON string, with the IDs of the winners (`drawn`) and the fingerprint of the set.
+    /// It contains the internal state of the random generator, so keep it from parties you do not trust
+    /// (see [`ItemSession::seal`]).
     pub fn save(&self) -> String {
         let drawn: Vec<String> = self.drawn().iter().map(|p| to_hex(&p.id)).collect();
         let session: Value = serde_json::from_str(&self.inner.save()).expect("session state is JSON");
@@ -166,20 +179,22 @@ impl ItemSession {
         .to_string()
     }
 
-    /// 状態に封をしてトークンにする。乱数の内部状態を相手に見せずに預けられる。
+    /// Seals the saved state into a token, so that it can be kept by a party that must not read or change it.
+    /// The arguments are the same as for [`Session::seal`].
     pub fn seal(&self, key: &crate::seal::Key, key_id: u8) -> Result<String, i32> {
         crate::seal::seal(self.save().as_bytes(), key, key_id)
     }
 
-    /// `seal` のトークンと、同じ候補集合（並びは違ってよい）から復元する。
+    /// Restores a session from a token made by [`ItemSession::seal`] and the same set of candidates (the order
+    /// may differ).
     pub fn unseal(token: &str, key: &crate::seal::Key, items: &[&[u8]]) -> Result<Self, StateError> {
         let plain = crate::seal::open(token, key)?;
         let text = String::from_utf8(plain).map_err(|_| StateError("sealed state is not UTF-8".to_string()))?;
         Self::load(&text, items)
     }
 
-    /// `save` の出力と、同じ候補集合（並びは違ってよい）から復元する。
-    /// 候補集合が違う、または状態が矛盾していれば `StateError`。
+    /// Restores a session from the output of [`ItemSession::save`] and the same set of candidates (the order
+    /// may differ). A different set, or a state that is inconsistent, gives a [`StateError`].
     pub fn load(state: &str, items: &[&[u8]]) -> Result<Self, StateError> {
         let bad = |m: &str| StateError(m.to_string());
         let v: Value = serde_json::from_str(state).map_err(|e| StateError(format!("invalid state: {e}")))?;
@@ -223,7 +238,9 @@ impl ItemSession {
     }
 }
 
-/// `items` から `k` 個を重複なしで抽選する。並び順に依らず、同じ集合とシードなら同じ候補が当選する。
+/// Draws `k` of the candidates without replacement. The same set of candidates and the same seed give the
+/// same winners whatever the order of `items`. The result lists each winner's index in `items` and ID.
+/// Fails with `SORTITION_ERR_INVALID` when `k` is more than the number of candidates.
 pub fn draw_items(items: &[&[u8]], k: u32, seed: Option<u64>) -> Result<Vec<Pick>, i32> {
     ItemSession::new(items, seed)?.draw(k)
 }
@@ -271,6 +288,7 @@ unsafe fn write_picks(picks: &[Pick], out_index: *mut u32, out_id: *mut u8) {
 ///
 /// # Safety
 /// `data` / `lens` は上の規約どおり、`out_ids` は `count * 32` バイト書ける領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_ids(data: *const u8, lens: *const usize, count: usize, out_ids: *mut u8) -> i32 {
     if out_ids.is_null() && count > 0 {
@@ -291,6 +309,7 @@ pub unsafe extern "C" fn sortition_item_ids(data: *const u8, lens: *const usize,
 ///
 /// # Safety
 /// `data` / `lens` は上の規約どおり、`out_fingerprint` は 32 バイト書ける領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_fingerprint(
     data: *const u8,
@@ -316,6 +335,7 @@ pub unsafe extern "C" fn sortition_item_fingerprint(
 ///
 /// # Safety
 /// `data` / `lens` / `seed` は規約どおり、`out_index` は `k` 要素、`out_ids` は `k * 32` バイト書ける領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_items_draw(
     data: *const u8,
@@ -344,6 +364,7 @@ pub unsafe extern "C" fn sortition_items_draw(
 ///
 /// # Safety
 /// `data` / `lens` / `seed` は規約どおり、`out` は書き込み可能なポインタ 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_new(
     data: *const u8,
@@ -375,6 +396,7 @@ pub unsafe extern "C" fn sortition_item_session_new(
 ///
 /// # Safety
 /// `s` は有効なセッション、`out_index` / `out_ids` は規約どおり。同じセッションを複数スレッドから同時に使わないこと。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_draw(
     s: *mut ItemSession,
@@ -400,6 +422,7 @@ pub unsafe extern "C" fn sortition_item_session_draw(
 /// # Safety
 /// `s` は有効なセッション、`key` は NULL か NUL 終端文字列、`out_index` / `out_ids` は規約どおり、
 /// `replayed` は NULL か書き込み可能な `int32_t` であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_draw_keyed(
     s: *mut ItemSession,
@@ -435,6 +458,7 @@ pub unsafe extern "C" fn sortition_item_session_draw_keyed(
 ///
 /// # Safety
 /// `s` は NULL か有効なセッションであること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_revision(s: *const ItemSession) -> u64 {
     if s.is_null() {
@@ -448,6 +472,7 @@ pub unsafe extern "C" fn sortition_item_session_revision(s: *const ItemSession) 
 ///
 /// # Safety
 /// `s` は有効なセッション、`out` は 33 バイト書ける領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_id(s: *const ItemSession, out: *mut u8) -> i32 {
     if s.is_null() || out.is_null() {
@@ -461,6 +486,7 @@ pub unsafe extern "C" fn sortition_item_session_id(s: *const ItemSession, out: *
 ///
 /// # Safety
 /// `s` は NULL か有効なセッションであること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_remaining(s: *const ItemSession) -> u32 {
     if s.is_null() {
@@ -474,6 +500,7 @@ pub unsafe extern "C" fn sortition_item_session_remaining(s: *const ItemSession)
 ///
 /// # Safety
 /// `s` は NULL か有効なセッションであること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_drawn_count(s: *const ItemSession) -> u32 {
     if s.is_null() {
@@ -487,6 +514,7 @@ pub unsafe extern "C" fn sortition_item_session_drawn_count(s: *const ItemSessio
 ///
 /// # Safety
 /// `s` は有効なセッション、`out` は書き込み可能な `char*` 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_save(s: *const ItemSession, out: *mut *mut c_char) -> i32 {
     if out.is_null() {
@@ -513,6 +541,7 @@ pub unsafe extern "C" fn sortition_item_session_save(s: *const ItemSession, out:
 ///
 /// # Safety
 /// `state` は `state_len` バイト読める領域、`data` / `lens` は規約どおり、`out` は書き込み可能なポインタ 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_load(
     state: *const u8,
@@ -559,6 +588,7 @@ pub unsafe extern "C" fn sortition_item_session_load(
 ///
 /// # Safety
 /// `s` は有効なセッション、`key` は 32 バイト読める領域、`out` は書き込み可能な `char*` 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_seal(
     s: *const ItemSession,
@@ -592,6 +622,7 @@ pub unsafe extern "C" fn sortition_item_session_seal(
 /// # Safety
 /// `token` は `len` バイト読める領域、`key` は 32 バイト読める領域、`data` / `lens` は規約どおり、
 /// `out` は書き込み可能なポインタ 1 個分の領域であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_unseal(
     token: *const u8,
@@ -637,6 +668,7 @@ pub unsafe extern "C" fn sortition_item_session_unseal(
 ///
 /// # Safety
 /// `s` は `sortition_item_session_new` / `_load` が返した未解放のポインタか NULL であること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_item_session_free(s: *mut ItemSession) {
     if !s.is_null() {

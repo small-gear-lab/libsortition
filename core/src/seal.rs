@@ -16,11 +16,13 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use crate::session::StateError;
 use crate::{set_last_error, SORTITION_ERR_INVALID, SORTITION_ERR_RNG, SORTITION_ERR_STATE, SORTITION_OK};
 
+/// What a sealed token starts with.
 pub const TOKEN_PREFIX: &str = "sortition1.";
 const AAD_PREFIX: &[u8] = b"libsortition/seal/v1";
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 
+/// A 32-byte secret key for sealing.
 pub type Key = [u8; 32];
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -76,7 +78,8 @@ pub(crate) fn seal_with_nonce(plaintext: &[u8], key: &Key, key_id: u8, nonce: &[
     Ok(format!("{TOKEN_PREFIX}{}", b64_encode(&raw)))
 }
 
-/// `plaintext` に封をしてトークンにする。ナンスの取得に失敗すれば `SORTITION_ERR_RNG`。
+/// Seals `plaintext` into a token (XChaCha20-Poly1305, with a random nonce). Fails with `SORTITION_ERR_RNG` if
+/// the nonce cannot be read from the operating system.
 pub fn seal(plaintext: &[u8], key: &Key, key_id: u8) -> Result<String, i32> {
     let mut nonce = [0u8; NONCE_LEN];
     getrandom::fill(&mut nonce).map_err(|_| SORTITION_ERR_RNG)?;
@@ -93,12 +96,12 @@ fn parse(token: &str) -> Result<Vec<u8>, StateError> {
     Ok(raw)
 }
 
-/// トークンに記された鍵 ID（開く前に、どの鍵を使うか選ぶため）。形式が不正なら `StateError`。
+/// The key id written in a token, to choose the key before opening it. A malformed token gives a `StateError`.
 pub fn token_key_id(token: &str) -> Result<u8, StateError> {
     Ok(parse(token)?[0])
 }
 
-/// 封を開く。形式の不正・鍵違い・改ざんはいずれも `StateError`（理由は区別しない）。
+/// Opens a token. A malformed token, a wrong key and tampering all give a `StateError` (they are not told apart).
 pub fn open(token: &str, key: &Key) -> Result<Vec<u8>, StateError> {
     let raw = parse(token)?;
     let key_id = raw[0];
@@ -136,6 +139,7 @@ pub(crate) unsafe fn token_arg<'a>(token: *const u8, len: usize) -> Result<&'a s
 ///
 /// # Safety
 /// `token` は `len` バイト読める領域、`out_key_id` は書き込み可能な 1 バイトであること。
+#[doc(hidden)]
 #[no_mangle]
 pub unsafe extern "C" fn sortition_seal_key_id(token: *const u8, len: usize, out_key_id: *mut u8) -> i32 {
     if out_key_id.is_null() {

@@ -18,7 +18,7 @@ pub const SORTITION_FORMAT_TOML: i32 = 2;
 #[cfg(feature = "yaml")]
 const MAX_DEPTH: usize = 128;
 
-/// エラーコードと、人が読むための詳細
+/// An error code (`SORTITION_ERR_*`) with a message for people to read.
 #[derive(Debug)]
 pub struct DataError {
     pub code: i32,
@@ -186,8 +186,10 @@ fn select(root: Value, path: &str) -> Result<Vec<Value>, DataError> {
     }
 }
 
-/// `text`（`format` 形式）の `path` にある配列から `k` 個を重複なしで抽選し、
-/// 選ばれた要素を JSON 配列の文字列で返す。
+/// Draws `k` elements without replacement from the array at `path` in `text` (in the given `format`) and
+/// returns the chosen elements as a JSON array string.
+///
+/// Like [`draw`](crate::draw), this works on positions in the array.
 pub fn draw_data(
     format: i32,
     text: &str,
