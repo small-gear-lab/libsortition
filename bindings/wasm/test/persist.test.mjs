@@ -145,3 +145,98 @@ test("localStorage の保存先でも同じように動く", async () => {
   await again.delete();
   assert.equal(map.size, 1);
 });
+
+const prizes = [{ name: "副賞", count: 3 }, { name: "大賞", count: 1 }];
+const sliceOf = (all, stages) => {
+  let at = 0;
+  return stages.map((s) => all.slice(at, (at += s.count)).map((p) => p.id));
+};
+
+test("賞ごとに引く: 1 つずつ引いても、一括で引いて切り分けたものと同じ", async () => {
+  const lots = createPersistence(s, { store: memoryStore() });
+  const lot = await lots.createStaged(names, prizes, { seed: 4n, label: "賞" });
+  assert.deepEqual(lot.stages.map((x) => x.drawn), [false, false]);
+  const first = await lot.drawStage();
+  assert.deepEqual([first.stage, first.name, first.count, first.drawn], [0, "副賞", 3, true]);
+  const second = await lot.drawStage();
+  assert.deepEqual([second.stage, second.name], [1, "大賞"]);
+  const [want0, want1] = sliceOf(s.drawItems(names, 4, { seed: 4n }), prizes);
+  assert.deepEqual(first.winners.map((p) => p.id), want0);
+  assert.deepEqual(second.winners.map((p) => p.id), want1);
+  assert.deepEqual(lot.stages.map((x) => x.winners.map((p) => p.id)), [want0, want1]);
+  // index は、渡した候補の中の位置
+  assert.ok(first.winners.every((p) => s.itemIds(names)[p.index] === p.id));
+  await assert.rejects(lot.drawStage(), RangeError); // もう引く賞がない
+});
+
+test("賞ごとに引く: リロードのあとも続きの賞から引け、引いた賞を指定しても引き直さない", async () => {
+  const lots = createPersistence(s, { store: memoryStore() });
+  const lot = await lots.createStaged(names, prizes, { seed: 4n });
+  const first = await lot.drawStage(0);
+  lot.close();
+  const again = await lots.resume(lot.id);
+  assert.deepEqual(again.stages.map((x) => x.drawn), [true, false]);
+  assert.deepEqual((await again.drawStage(0)).winners, first.winners); // 引いた賞は前回の結果
+  assert.equal(again.drawnCount, 3);
+  const second = await again.drawStage(); // 続きの賞
+  assert.equal(second.stage, 1);
+  assert.equal(again.drawnCount, 4);
+  assert.deepEqual([...first.winners, ...second.winners].map((p) => p.id), s.drawItems(names, 4, { seed: 4n }).map((p) => p.id));
+});
+
+test("賞ごとに引く: 前の賞を飛ばせない。すべて引くまで draw（補欠）は使えない", async () => {
+  const lots = createPersistence(s, { store: memoryStore() });
+  const lot = await lots.createStaged(names, prizes, { seed: 4n });
+  await assert.rejects(lot.drawStage(1), RangeError); // 副賞が先
+  await assert.rejects(lot.drawStage(5), RangeError);
+  await assert.rejects(lot.draw(1), RangeError);
+  assert.equal(lot.drawnCount, 0); // 失敗は何も残さない
+  await lot.drawStage();
+  await assert.rejects(lot.draw(1), RangeError);
+  await lot.drawStage();
+  const reserve = await lot.draw(2); // すべての賞を引いたあとなら、補欠を続きから引ける
+  assert.deepEqual([...await lot.drawn].slice(4), reserve.map((p) => p.id));
+  assert.deepEqual(lot.stages.map((x) => x.drawn), [true, true]); // 賞の結果は変わらない
+  assert.equal(lot.stages[1].winners.length, 1);
+  const plain = await lots.createItems(names);
+  await assert.rejects(plain.drawStage(), RangeError); // 賞のないセッションでは使えない
+  assert.equal(plain.stages, undefined);
+});
+
+test("賞ごとに引く: 別のタブとの競合でも、同じ賞は同じ結果、別の賞は重複しない", async () => {
+  const lots = createPersistence(s, { store: memoryStore() });
+  const tab1 = await lots.createStaged(names, prizes, { seed: 4n });
+  const tab2 = await lots.resume(tab1.id);
+  const a = await tab1.drawStage(0);
+  const b = await tab2.drawStage(0); // tab2 の手元は古いが、同じ賞は前回と同じ結果
+  assert.deepEqual(b.winners, a.winners);
+  assert.equal(tab2.drawnCount, 3);
+  // 「次の賞」を同時に呼ぶと、直列になって別々の賞を引く
+  const lot = await lots.createStaged(names, prizes, { seed: 9n });
+  const other = await lots.resume(lot.id);
+  const [x, y] = await Promise.all([lot.drawStage(), other.drawStage()]);
+  assert.deepEqual([x.stage, y.stage].sort(), [0, 1]);
+  assert.equal(new Set([...x.winners, ...y.winners].map((p) => p.id)).size, 4);
+});
+
+test("賞ごとに引く: 賞が 0 人でも進める。計画の検査と export / import", async () => {
+  const lots = createPersistence(s, { store: memoryStore() });
+  const lot = await lots.createStaged(names, [{ name: "空", count: 0 }, ...prizes], { seed: 1n });
+  assert.deepEqual((await lot.drawStage(0)).winners, []); // 0 人の賞は、最初から引き終わっている扱い
+  assert.equal((await lot.drawStage()).stage, 1); // 「次の賞」は 0 人の賞を飛ばして副賞
+  await assert.rejects(lots.createStaged(names, []), RangeError);
+  await assert.rejects(lots.createStaged(names, [{ name: "a", count: -1 }]), RangeError);
+  await assert.rejects(lots.createStaged(names, [{ name: "a", count: 1.5 }]), RangeError);
+  await assert.rejects(lots.createStaged(names, [{ count: 1 }]), RangeError);
+  await assert.rejects(lots.createStaged(["a", "b"], [{ name: "a", count: 3 }]), RangeError);
+  assert.equal((await lots.list()).length, 1); // 失敗した作成は何も保存しない
+
+  const there = createPersistence(s, { store: memoryStore() });
+  await there.import(await lot.export());
+  const moved = await there.resume(lot.id);
+  assert.deepEqual(moved.stages.map((x) => [x.name, x.drawn]), [["空", true], ["副賞", true], ["大賞", false]]);
+  assert.equal((await moved.drawStage()).name, "大賞");
+  const record = JSON.parse(await lot.export());
+  record.stages = [{ name: "多すぎる", count: 99 }];
+  await assert.rejects(there.import(JSON.stringify(record), { overwrite: true }), RangeError);
+});

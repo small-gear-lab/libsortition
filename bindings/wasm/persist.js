@@ -16,6 +16,8 @@
 //  - draw は羃等キー付きで呼ぶ（省略時は呼び出しごとに自動で作る）。通信や保存の失敗でやり直しても二重に引かない。
 //  - 保存は「読んだ revision のときだけ更新」で、別のタブが先に進めていたら読み直して引き直す。
 //    タブ間の排他には Web Locks を使い、なければ同じページ内の排他だけになる。
+//  - 賞ごとに引くときは createStaged で賞の計画を一緒に保存し、drawStage で 1 つずつ引く。
+//    リロードのあとも、続きの賞から引ける（同じ賞を引き直しても、前回の結果を返すだけ）。
 //  - export / import で、状態をテキストにして別の端末へ移せる（乱数の内部状態を含むので、
 //    本人以外には渡さないこと）。
 
@@ -203,6 +205,21 @@ function encodeItems(items) {
 
 const decodeItems = (encoded) => encoded.map(([type, value]) => (type === "s" ? value : fromBase64(value)));
 
+/** 賞の計画（[{ name, count }]）を調べて、保存する形にそろえる。合計が候補数を超えていれば RangeError */
+function checkStages(stages, available) {
+  if (!Array.isArray(stages) || stages.length === 0) throw new RangeError("stages must be a non-empty array");
+  let total = 0;
+  const plan = stages.map((s, i) => {
+    if (typeof s?.name !== "string" || !Number.isInteger(s.count) || s.count < 0) {
+      throw new RangeError(`stages[${i}] must be { name: string, count: non-negative integer }`);
+    }
+    total += s.count;
+    return { name: s.name, count: s.count };
+  });
+  if (total > available) throw new RangeError(`the stages need ${total} winners but there are only ${available} candidates`);
+  return plan;
+}
+
 // ---- 永続化つきのセッション ----
 
 /**
@@ -219,7 +236,7 @@ export function createPersistence(sortition, { store = defaultStore() } = {}) {
     items: { restore: (rec) => sortition.loadItemSession(rec.state, decodeItems(rec.items)) },
   };
 
-  const snapshot = (kind, session, items, label) => ({
+  const snapshot = (kind, session, items, label, stages) => ({
     v: RECORD_VERSION,
     id: session.id,
     kind,
@@ -228,6 +245,7 @@ export function createPersistence(sortition, { store = defaultStore() } = {}) {
     label: label ?? null,
     state: session.save(),
     ...(items ? { items } : {}),
+    ...(stages ? { stages } : {}),
   });
 
   class PersistentSession {
@@ -236,13 +254,16 @@ export function createPersistence(sortition, { store = defaultStore() } = {}) {
     #session;
     #items;
     #label;
+    #stages; // 賞の計画 [{ name, count }]（賞ごとに引くセッションだけ）
+    #idToIndex; // 候補の ID → 位置（賞の結果を作るときに使う）
 
-    constructor(kind, session, items, label) {
+    constructor(kind, session, items, label, stages) {
       this.#id = session.id; // 閉じたあとも読めるように控えておく
       this.#kind = kind;
       this.#session = session;
       this.#items = items;
       this.#label = label;
+      this.#stages = stages;
     }
 
     get id() {
@@ -272,27 +293,84 @@ export function createPersistence(sortition, { store = defaultStore() } = {}) {
     }
 
     /**
-     * 続きから k 個引いて保存する。key を省略すると呼び出しごとに自動で作る。
-     * 保存に失敗しても、同じ key で呼び直せば二重に引かない。別のタブが先に進めていたら、
-     * 読み直して続きから引く。
+     * 保存されている最新の状態から mutate(session) を実行して保存する。別のタブが先に進めていたら
+     * 読み直し、保存で競合したら読み直してやり直す。mutate は何度か呼ばれることがあるので、
+     * 羃等キーを使うなど、繰り返しても二重にならないようにしておくこと。
      */
-    draw(k, { key = newKey() } = {}) {
+    #update(mutate) {
       return withLock(this.id, async () => {
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
           const stored = await store.get(this.id);
           if (!stored) throw new NotFoundError(this.id);
           if (attempt > 0 || stored.revision !== this.#session.revision) this.#rebuild(stored);
-          const picks = this.#session.draw(k, { key });
+          const result = mutate(this.#session);
           try {
-            await store.put(this.id, snapshot(this.#kind, this.#session, this.#items, this.#label), {
+            await store.put(this.id, snapshot(this.#kind, this.#session, this.#items, this.#label, this.#stages), {
               expectedRevision: stored.revision,
             });
-            return picks;
+            return result;
           } catch (e) {
             if (!(e instanceof ConflictError)) throw e;
           }
         }
         throw new ConflictError("the session keeps being updated elsewhere");
+      });
+    }
+
+    /**
+     * 続きから k 個引いて保存する。key を省略すると呼び出しごとに自動で作る。
+     * 保存に失敗しても、同じ key で呼び直せば二重に引かない。別のタブが先に進めていたら、
+     * 読み直して続きから引く。賞ごとに引くセッションでは、すべての賞を引いたあと（補欠など）にだけ使える。
+     */
+    draw(k, { key = newKey() } = {}) {
+      return this.#update((session) => {
+        if (this.#stages && session.drawnCount < this.#stages.reduce((a, s) => a + s.count, 0)) {
+          throw new RangeError("draw the remaining stages first");
+        }
+        return session.draw(k, { key });
+      });
+    }
+
+    /** 賞の計画と、引いた結果（賞ごとの { name, count, drawn, winners }）。賞ごとに引くセッションだけ */
+    get stages() {
+      if (!this.#stages) return undefined;
+      const ids = this.drawn;
+      let start = 0;
+      return this.#stages.map((stage) => {
+        const view = this.#stageView(ids, stage, start);
+        start += stage.count;
+        return view;
+      });
+    }
+
+    #stageView(ids, stage, start) {
+      const drawn = ids.length >= start + stage.count;
+      this.#idToIndex ??= new Map(sortition.itemIds(decodeItems(this.#items)).map((id, i) => [id, i]));
+      const winners = drawn ? ids.slice(start, start + stage.count).map((id) => ({ index: this.#idToIndex.get(id), id })) : [];
+      return { name: stage.name, count: stage.count, drawn, winners };
+    }
+
+    /**
+     * 賞を 1 つ引いて保存し、{ stage, name, count, drawn, winners } を返す。index を省略すると次の賞。
+     * すでに引いた賞を指定すると、引き直さず前回の結果を返す。前の賞が未抽選の賞は引けない（RangeError）。
+     * 別のタブが同じ賞を引いたあとでも、同じ結果になる。
+     */
+    drawStage(index) {
+      if (!this.#stages) return Promise.reject(new RangeError("this session has no stages"));
+      const plan = this.#stages;
+      const starts = plan.map((_, i) => plan.slice(0, i).reduce((a, s) => a + s.count, 0));
+      return this.#update((session) => {
+        const done = (j, ids) => ids.length >= starts[j] + plan[j].count;
+        let ids = JSON.parse(session.save()).drawn;
+        const i = index ?? plan.findIndex((_, j) => !done(j, ids));
+        if (i === -1) throw new RangeError("all stages have been drawn");
+        if (!Number.isInteger(i) || i < 0 || i >= plan.length) throw new RangeError(`no such stage: ${index}`);
+        if (!done(i, ids)) {
+          if (ids.length !== starts[i]) throw new RangeError(`draw the earlier stages first (stage ${i})`);
+          session.draw(plan[i].count, { key: `stage-${i}` });
+          ids = JSON.parse(session.save()).drawn;
+        }
+        return { stage: i, ...this.#stageView(ids, plan[i], starts[i]) };
       });
     }
 
@@ -313,14 +391,14 @@ export function createPersistence(sortition, { store = defaultStore() } = {}) {
     }
   }
 
-  async function adopt(kind, session, items, label) {
+  async function adopt(kind, session, items, label, stages) {
     try {
-      await store.put(session.id, snapshot(kind, session, items, label), { expectedRevision: null });
+      await store.put(session.id, snapshot(kind, session, items, label, stages), { expectedRevision: null });
     } catch (e) {
       session.close();
       throw e;
     }
-    return new PersistentSession(kind, session, items, label);
+    return new PersistentSession(kind, session, items, label, stages);
   }
 
   const lots = {
@@ -335,11 +413,21 @@ export function createPersistence(sortition, { store = defaultStore() } = {}) {
       return adopt("items", sortition.createItemSession(decodeItems(encoded), { seed }), encoded, label);
     },
 
+    /**
+     * 賞ごとに引くセッションを作って保存する。stages は引く順の [{ name, count }]。
+     * 賞の合計が候補数を超えていれば RangeError。賞は drawStage で 1 つずつ引く。
+     */
+    async createStaged(items, stages, { seed, label } = {}) {
+      const encoded = encodeItems(items);
+      const plan = checkStages(stages, encoded.length);
+      return adopt("items", sortition.createItemSession(decodeItems(encoded), { seed }), encoded, label, plan);
+    },
+
     /** 保存してあるセッションを続きから使う。なければ null */
     async resume(id) {
       const record = await store.get(id);
       if (!record) return null;
-      return new PersistentSession(record.kind, kinds[record.kind].restore(record), record.items, record.label);
+      return new PersistentSession(record.kind, kinds[record.kind].restore(record), record.items, record.label, record.stages);
     },
 
     /** 保存してあるセッションの一覧（新しい順） */
@@ -369,7 +457,8 @@ export function createPersistence(sortition, { store = defaultStore() } = {}) {
       const record = JSON.parse(text);
       if (record?.v !== RECORD_VERSION || !kinds[record.kind]) throw new RangeError("unsupported record");
       const session = kinds[record.kind].restore(record); // 検証（不正なら例外）
-      const fresh = snapshot(record.kind, session, record.items, record.label);
+      const stages = record.stages ? checkStages(record.stages, session.remaining + session.drawnCount) : undefined;
+      const fresh = snapshot(record.kind, session, record.items, record.label, stages);
       session.close();
       const existing = await store.get(fresh.id);
       if (existing && !overwrite && existing.revision >= fresh.revision) return fresh.id;

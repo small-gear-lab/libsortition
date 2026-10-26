@@ -89,6 +89,24 @@ await again.draw(1);                       // continues where it stopped, never 
 - `export()` / `import()` move a session to another device as text. It contains the random generator's state, so keep it to yourself.
 - `demo/index.html` uses this: after the main draw it can draw substitutes one at a time (for people who decline), and a reload restores everything.
 
+To draw prizes one stage at a time, give the plan when you create the session. Each stage is drawn when you ask for it, and a reload in between loses nothing:
+
+```js
+const lot = await lots.createStaged(["alice", "bob", "carol", "dave", "erin"], [
+  { name: "Runner-up", count: 3 },
+  { name: "Grand prize", count: 1 },
+], { seed: 42n });
+
+const first = await lot.drawStage();      // { stage: 0, name: "Runner-up", winners: [...] }
+// ... reload ...
+const again = await lots.resume(lot.id);
+await again.drawStage(0);                 // an already-drawn stage returns the same winners
+await again.drawStage();                  // the next stage, "Grand prize"
+await again.draw(1);                      // after all stages: one substitute, from where it left off
+```
+
+The results are the same as drawing the total once and cutting it up in order. The plan cannot change after creation, a stage cannot be drawn before the ones in front of it, and `draw()` waits until every stage has been drawn.
+
 **With a server** (for example a function on Workers or Lambda that keeps no database): a saved state includes the random generator's state, so whoever holds it can predict later winners and can forge a state. Keep the state out of the browser's hands by sealing it. The key stays on the server.
 
 ```python

@@ -20,6 +20,22 @@ export interface SessionRecord {
   state: string;
   /** 候補のセッションだけ: [["s", 文字列] | ["b", base64], ...] */
   items?: Array<["s" | "b", string]>;
+  /** 賞ごとに引くセッションだけ: 引く順の賞の計画 */
+  stages?: StagePlan[];
+}
+
+/** 賞の計画の 1 件 */
+export interface StagePlan {
+  name: string;
+  count: number;
+}
+
+/** 賞ごとの進み具合。drawn が true なら winners に当選者が入る */
+export interface StageProgress {
+  name: string;
+  count: number;
+  drawn: boolean;
+  winners: Pick[];
 }
 
 /**
@@ -66,9 +82,17 @@ export interface PersistentSession<T = number | Pick> {
   readonly drawn: Array<number | string>;
   /**
    * 続きから k 個引いて保存する。別のタブが先に進めていたら読み直して続きから引く。
-   * 保存に失敗しても、同じ key で呼び直せば二重に引かない
+   * 保存に失敗しても、同じ key で呼び直せば二重に引かない。
+   * 賞ごとに引くセッションでは、すべての賞を引いたあと（補欠など）にだけ使える（それまでは RangeError）
    */
   draw(k: number, options?: DrawCall): Promise<T[]>;
+  /** 賞の計画と進み具合。賞ごとに引くセッション（createStaged）だけ */
+  readonly stages?: StageProgress[];
+  /**
+   * 賞を 1 つ引いて保存する。index を省略すると次の賞（0 人の賞は引き終わっている扱いで飛ばす）。
+   * すでに引いた賞を指定すると、引き直さず前回の結果を返す。前の賞が未抽選の賞は引けない（RangeError）
+   */
+  drawStage(index?: number): Promise<StageProgress & { stage: number }>;
   /** 保存されている状態を書き出す（別の端末で import できる）。乱数の内部状態を含むので、本人以外には渡さないこと */
   export(): Promise<string>;
   /** コア側のメモリを解放する（保存した状態は残る） */
@@ -82,6 +106,11 @@ export interface Persistence {
   create(options: { n: number; seed?: DrawOptions["seed"]; label?: string }): Promise<PersistentSession<number>>;
   /** 候補（string / ArrayBuffer / TypedArray）のセッションを作って保存する。候補も一緒に保存する */
   createItems(items: Candidate[], options?: { seed?: DrawOptions["seed"]; label?: string }): Promise<PersistentSession<Pick>>;
+  /**
+   * 賞ごとに引くセッションを作って保存する。stages は引く順の賞の計画で、作ったあとは変えられない。
+   * 賞の合計が候補数を超えていれば RangeError
+   */
+  createStaged(items: Candidate[], stages: StagePlan[], options?: { seed?: DrawOptions["seed"]; label?: string }): Promise<PersistentSession<Pick>>;
   /** 保存してあるセッションを続きから使う。なければ null */
   resume(id: string): Promise<PersistentSession | null>;
   /** 保存してあるセッションの一覧（新しい順） */
