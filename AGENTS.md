@@ -65,7 +65,7 @@ A release is a version tag; everything else follows from it. Steps, in order:
 7. Publish the packages by hand, in this order (they need accounts and 2FA, so they are not automated):
    - crates.io: `cargo publish -p sortition`, wait until it appears in the index, then `cargo publish -p sortition-cli`.
    - npm: `cd bindings/wasm && bindings/wasm/build.sh && npm publish` (see below).
-   - NuGet: `dotnet pack -c Release bindings/dotnet/Sortition` and `dotnet nuget push` the `.nupkg` (the package has no native library; the user supplies `libsortition`).
+   - NuGet: run **Publish** by hand ("Run workflow", with the tag). It uses Trusted Publishing (a nuget.org policy for `publish.yml` and the `release` environment), so there is no API key; a reviewer approves the run. The package has no native library; the user supplies `libsortition`.
    - Python, Ruby, PHP, Go, Java, Swift and Dart are used from source for now (no registry package yet).
 8. Never move or delete a published tag. A mistake gets a new patch version.
 

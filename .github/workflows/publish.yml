@@ -1,0 +1,61 @@
+name: Publish
+
+# Publishes a released version to the package registries that support Trusted Publishing, with no
+# long-lived API key: the job gets a short-lived credential from GitHub's OIDC token.
+#   - NuGet: the Sortition package (the nuget.org policy names this file and the "release" environment)
+# crates.io and npm will join once their Trusted Publishing is set up (it needs the first release
+# to exist). Run it by hand ("Run workflow") with the tag to publish, e.g. v0.1.0.
+#
+# The "release" environment (Settings → Environments) should require a reviewer, so that a person
+# approves each run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag to publish, e.g. v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  nuget:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # lets the job ask GitHub for the OIDC token that NuGet/login exchanges
+    steps:
+      - name: The tag looks like a version and exists
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::The tag must look like v1.2.3, but it is '$TAG'"
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - name: Pack
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          dotnet pack -c Release bindings/dotnet/Sortition -o dist
+          ls -l dist
+          [ -f "dist/Sortition.${TAG#v}.nupkg" ] || { echo "::error::dist/Sortition.${TAG#v}.nupkg was not built (does the version in Sortition.csproj match the tag?)"; exit 1; }
+      - name: NuGet login (OIDC to a short-lived API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: marie-222 # the nuget.org profile name (not the e-mail address)
+      - name: Push
+        env:
+          TAG: ${{ inputs.tag }}
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push "dist/Sortition.${TAG#v}.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
