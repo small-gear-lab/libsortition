@@ -3,7 +3,7 @@ name = "sortition"
 version = "0.1.0"
 edition = "2021"
 description = "Minimal unbiased random lottery (sampling without replacement) core with a C ABI"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
