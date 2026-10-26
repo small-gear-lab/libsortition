@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libsortition</title>
+<style>
+  body { font: 16px/1.6 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid #8884; }
+  pre { overflow-x: auto; padding: .8rem; background: #8881; }
+</style>
+</head>
+<body>
+<h1>libsortition</h1>
+<p>Builds of the WebAssembly binding and the demo. Each folder holds <code>sortition.js</code>,
+<code>persist.js</code>, <code>sortition.wasm</code>, the type definitions, the licenses and a
+<code>manifest.json</code> with the SHA-384 hash of every file.</p>
+<p><strong>For a draw that others must trust, use a versioned folder</strong> (for example
+<code>/v0.1.0/</code>), not <code>latest</code> or <code>next</code>: a versioned folder never changes, and you can
+check its files against the manifest.</p>
+<pre>import { load } from "https://small-gear-lab.github.io/libsortition/v0.1.1/sortition.js";
+const sortition = await load();</pre>
+<table>
+<thead><tr><th>Folder</th><th></th><th></th><th>Commit</th></tr></thead>
+<tbody>
+<tr><td><a href="latest/demo/">latest</a></td><td>the newest stable release</td><td><a href="latest/manifest.json">manifest</a></td><td><code>37fe8fd</code></td></tr>
+<tr><td><a href="next/demo/">next</a></td><td>the current main branch (may change at any time)</td><td><a href="next/manifest.json">manifest</a></td><td><code>37fe8fd</code></td></tr>
+<tr><td><a href="v0.1.1/demo/">v0.1.1</a></td><td>release (never changes)</td><td><a href="v0.1.1/manifest.json">manifest</a></td><td><code>37fe8fd</code></td></tr>
+<tr><td><a href="v0.1.0/demo/">v0.1.0</a></td><td>release (never changes)</td><td><a href="v0.1.0/manifest.json">manifest</a></td><td><code>b051d87</code></td></tr>
+</tbody>
+</table>
+<p><a href="https://github.com/small-gear-lab/libsortition">Source and documentation on GitHub</a></p>
+</body>
+</html>

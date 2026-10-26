@@ -1,0 +1,42 @@
+{
+  "name": "v0.1.1",
+  "commit": "37fe8fd2f12921774f57039e3ebc2c1262fe88a9",
+  "files": {
+    "LICENSE-APACHE": {
+      "integrity": "sha384-SeGljltQ5RnoK4ceoLmu4rZNG6v7e0b7b8qDtQqucDRhOHo1sB9gVGhj5C9oh58t",
+      "bytes": 11368
+    },
+    "LICENSE-MIT": {
+      "integrity": "sha384-QGcf5OLMuyH+dsPMJ7gyNKjb4Nu0AYDR6AFU9jtZ+WN18i4t+a9YWT3XQbZNawIl",
+      "bytes": 1096
+    },
+    "NOTICE": {
+      "integrity": "sha384-tG/F7+4ST7htRmriNZ3KUiXizGlph3YWZKLJc3enl1pBWjt8L1Fc0hFvFpbqIBK3",
+      "bytes": 135
+    },
+    "demo/index.html": {
+      "integrity": "sha384-DnhkTlZfftuNCmgggLLhzRWoGSshc4OovRzwG74JxdwvM6nbkLOGZ9xrFo+ys2bl",
+      "bytes": 19073
+    },
+    "persist.d.ts": {
+      "integrity": "sha384-WaMyzrAayHuYneqF/KRlynVt+B1gnibBOFhDIxLgubPKQV/+OLSzj2ANGmelrx1J",
+      "bytes": 6157
+    },
+    "persist.js": {
+      "integrity": "sha384-wm0Nj7fKc5242Axp9n8ukU9zFl1tRflVUNLmDaZq4+M3LwYvawkC5ZIyt05FHEd8",
+      "bytes": 19154
+    },
+    "sortition.d.ts": {
+      "integrity": "sha384-30mS4dxNhM7kUlFS+RjNAIAdGp/jTUZuTCq2aO7EwRH0O5aWicJ0x27spAZVRG3/",
+      "bytes": 6320
+    },
+    "sortition.js": {
+      "integrity": "sha384-1R8VDEYP01Hh3YTwznWbQD2fVpsaK0zJ6k1gU9CWiyeTmQmOkTCvTG1+p70gFGNN",
+      "bytes": 21783
+    },
+    "sortition.wasm": {
+      "integrity": "sha384-8bf/Je4wrzySMKEodn7te+nr7gEwK8vzWrYlL2UWyGXezrG3qRNLsXA5Dv+Ws6Lz",
+      "bytes": 810324
+    }
+  }
+}

@@ -1,0 +1,133 @@
+export type Seed = bigint | number | null | undefined;
+export type Format = "json" | "yaml" | "toml";
+
+export class SortitionError extends RangeError {
+  /** SORTITION_ERR_* の値（負数） */
+  code: number;
+}
+
+export interface DrawOptions {
+  /** 指定すると結果が再現できる（u64）。省略すると乱数源から取る */
+  seed?: Seed;
+}
+
+export interface DataOptions extends DrawOptions {
+  format: Format;
+  /** 配列の場所（"a.b.0" のドット区切り）。空ならルート。TOML は必須 */
+  path?: string;
+}
+
+export interface Stage {
+  name: string;
+  count: number;
+}
+
+export interface StageResult {
+  name: string;
+  count: number;
+  winners: Pick[];
+}
+
+export interface DrawCallOptions {
+  /**
+   * 羃等キー（1〜128 バイト）。同じ key と同じ k の再送は、状態を変えずに前回と同じ結果を返す。
+   * 同じ key で別の k は SortitionError（code -9）
+   */
+  key?: string | null;
+}
+
+/** 封をする鍵（ちょうど 32 バイト） */
+export type SecretKey = Uint8Array | ArrayBuffer | ArrayBufferView;
+
+export interface Session {
+  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
+  draw(k: number, options?: DrawCallOptions): number[];
+  /** 状態を変えた draw の回数。保存側が「読んだ revision のときだけ更新する」ために使える */
+  readonly revision: number;
+  /** セッションの識別子（小文字 16 進 32 文字） */
+  readonly id: string;
+  /**
+   * 状態に封をしたトークンを返す。乱数の内部状態を相手に見せずに預けられる。
+   * keyId は鍵の入れ替え用の目印（0〜255）
+   */
+  seal(key: SecretKey, keyId?: number): string;
+  /** まだ引いていない数 */
+  readonly remaining: number;
+  /** ここまでに引いた数 */
+  readonly drawnCount: number;
+  /** 状態を JSON 文字列で返す。引いた結果（"drawn"）も含む */
+  save(): string;
+  /** コア側のセッションを解放する（以後の利用は Error）。二重に呼んでもよい */
+  close(): void;
+}
+
+/** 候補。string は UTF-8、バイナリは ArrayBuffer / TypedArray */
+export type Candidate = string | ArrayBuffer | ArrayBufferView;
+
+export interface Pick {
+  /** 渡した items の中の位置（復元したセッションでは渡し直した items の中の位置） */
+  index: number;
+  /** 候補の ID（SHA-256、小文字 16 進 64 文字） */
+  id: string;
+}
+
+export interface ItemSession {
+  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
+  draw(k: number, options?: DrawCallOptions): Pick[];
+  readonly revision: number;
+  readonly id: string;
+  /** 状態に封をしたトークンを返す。引数は Session#seal と同じ */
+  seal(key: SecretKey, keyId?: number): string;
+  readonly remaining: number;
+  readonly drawnCount: number;
+  /** 状態を JSON 文字列で返す。引いた候補の ID（"drawn"）と候補集合の指紋（"fingerprint"）を含む */
+  save(): string;
+  close(): void;
+}
+
+export interface Sortition {
+  /** 0..n-1 から k 個を重複なしで抽選する（選ばれた順） */
+  draw(n: number, k: number, options?: DrawOptions): number[];
+  /** 1 行 1 候補のテキストから k 個を抽選する（前後の空白を除き、空行は捨てる） */
+  drawText(text: string, k: number, options?: DrawOptions): string[];
+  /** JSON / YAML / TOML のテキストにある配列から k 個を抽選する（要素は JSON に正規化される） */
+  drawData(text: string, k: number, options: DataOptions): unknown[];
+  /**
+   * 賞ごとに順番に抽選する（重複当選なし）。合計人数を drawItems で一度に引いて、先頭から賞ごとに切り分ける。
+   * 候補は ID の昇順に並べてから引くので、同じ候補集合とシードなら、items の並びが違っても同じ候補が当選する
+   */
+  drawStages(items: Candidate[], stages: Stage[], options?: DrawOptions): StageResult[];
+  /**
+   * 各候補の ID を items と同じ並びで返す。ID = SHA-256(接頭辞 || バイト列 || 出現番号) で、
+   * 同じバイト列が複数あっても出現番号が混ざるので全候補で一意
+   */
+  itemIds(items: Candidate[]): string[];
+  /** 候補集合の指紋。items の並びに依らない（抽選前にシードと一緒に公開すると後から検証できる） */
+  itemFingerprint(items: Candidate[]): string;
+  /** 候補を ID の昇順に並べてから k 個引く。同じ候補集合とシードなら、items の並びが違っても同じ候補が当選する */
+  drawItems(items: Candidate[], k: number, options?: DrawOptions): Pick[];
+  /** 候補集合を固定した、保存・復元できる抽選セッション */
+  createItemSession(items: Candidate[], options?: DrawOptions): ItemSession;
+  /** save() の出力と同じ候補集合（並びは違ってよい）から復元する。違えば SortitionError（code -8） */
+  loadItemSession(state: string, items: Candidate[]): ItemSession;
+  /** Session#seal のトークンから復元する。形式の不正・鍵違い・改ざんは SortitionError（code -8） */
+  unsealSession(token: string, key: SecretKey): Session;
+  /** ItemSession#seal のトークンと、同じ候補集合（並びは違ってよい）から復元する */
+  unsealItemSession(token: string, key: SecretKey, items: Candidate[]): ItemSession;
+  /** トークンに記された鍵 ID。鍵を入れ替えている場合に、開く前に鍵を選ぶのに使う */
+  sealKeyId(token: string): number;
+  version(): string;
+  /** リニアメモリの現在のサイズ（バイト）。リークの確認用 */
+  memoryBytes(): number;
+}
+
+/** WASM を読み込む。省略時は同じ場所の sortition.wasm */
+export function load(
+  source?: ArrayBuffer | ArrayBufferView | WebAssembly.Module | Response | URL | string,
+): Promise<Sortition>;
+
+/** 文字列から seed（SHA-256 の先頭 8 バイト、リトルエンディアン）を決める */
+export function seedFromText(text: string): Promise<bigint>;
+
+/** 候補テキストを抽選と同じ規則で正規化する */
+export function normalizeCandidates(text: string): string[];
