@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>抽選マシーン</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --text: #23211f; --muted: #6b665f; --line: #dcd8d0;
+    --accent: #b4442b; --accent-text: #ffffff; --ok: #1f7a4d; --warn: #9a5b00; --code: #efece5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1918; --panel: #242220; --text: #ece8e1; --muted: #a29b90; --line: #3a3733;
+      --accent: #e0674b; --accent-text: #1a1918; --ok: #5fc592; --warn: #e0a040; --code: #2e2b28;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.7 system-ui, "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  .lead { color: var(--muted); margin: 0 0 24px; }
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  label { display: block; font-weight: 600; margin-bottom: 4px; }
+  textarea, input[type="text"] {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--text); font: inherit;
+  }
+  textarea { min-height: 150px; resize: vertical; font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 0.92rem; }
+  textarea.short { min-height: 84px; }
+  .hint { color: var(--muted); font-size: 0.86rem; margin: 6px 0 0; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row > input[type="text"] { flex: 1 1 260px; width: auto; }
+  button {
+    font: inherit; font-weight: 600; padding: 10px 18px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  code, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 0.86rem; word-break: break-all; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 8px 0 0; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  #error { color: var(--warn); font-weight: 600; min-height: 1.5em; margin: 8px 0 0; }
+  .stage { margin: 0 0 16px; }
+  .stage h3 { margin: 0 0 6px; font-size: 1rem; }
+  .winners { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .winners li {
+    padding: 10px 14px; border-radius: 8px; border: 1px dashed var(--line); color: var(--muted);
+    min-height: 3em; display: flex; align-items: center; word-break: break-all;
+  }
+  .winners li.spinning { border-style: solid; color: var(--text); font-family: ui-monospace, Menlo, monospace; }
+  .winners li.done { border: 2px solid var(--accent); color: var(--text); font-weight: 700; font-size: 1.15rem; }
+  pre { background: var(--code); padding: 12px; border-radius: 8px; overflow: auto; margin: 8px 0 0; font-size: 0.82rem; }
+  .status { color: var(--muted); font-size: 0.9rem; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>抽選マシーン</h1>
+  <p class="lead">結果は「候補リスト」と「seed の文字列」だけで決まります。同じ入力なら、誰がやっても同じ結果になります。</p>
+
+  <section aria-labelledby="h-candidates">
+    <h2 id="h-candidates">1. 候補（1 行に 1 つ）</h2>
+    <textarea id="candidates" spellcheck="false" aria-describedby="cand-info" placeholder="例:&#10;https://note.com/example/n/n0001&#10;https://note.com/example/n/n0002"></textarea>
+    <p class="hint">前後の空白は無視し、空行は数えません。同じ文字列の行は別の候補として数えるので、事前に 1 人 1 行にしておいてください。</p>
+    <dl class="kv" id="cand-info">
+      <dt>候補数</dt><dd id="cand-count">0</dd>
+      <dt>リストの SHA-256</dt><dd class="mono" id="cand-hash">-</dd>
+    </dl>
+  </section>
+
+  <section aria-labelledby="h-stages">
+    <h2 id="h-stages">2. 賞（引く順に、1 行に 1 つ「名前: 人数」）</h2>
+    <textarea id="stages" class="short" spellcheck="false">副賞: 3
+大賞: 1</textarea>
+    <p class="hint">上の行から順に引きます。同じ人が複数の賞に当たることはありません。</p>
+  </section>
+
+  <section aria-labelledby="h-seed">
+    <h2 id="h-seed">3. seed の文字列</h2>
+    <label for="seed">seed の文字列</label>
+    <div class="row">
+      <input type="text" id="seed" autocomplete="off" spellcheck="false" placeholder="事前に公開した文字列＋当日決まる値 など">
+      <button type="button" id="make-seed">ランダムに作る</button>
+    </div>
+    <dl class="kv">
+      <dt>コミット値</dt><dd class="mono" id="seed-commit">-</dd>
+      <dt>seed（数値）</dt><dd class="mono" id="seed-u64">-</dd>
+    </dl>
+    <p class="hint">
+      先にコミット値（seed 文字列の SHA-256）だけを公開しておき、抽選の直前に文字列を明かすと、後から seed を選び直していないことを示せます。
+      seed の数値は、文字列の SHA-256 の先頭 8 バイト（リトルエンディアン）です。
+    </p>
+  </section>
+
+  <section aria-labelledby="h-draw">
+    <h2 id="h-draw">4. 抽選</h2>
+    <div class="row">
+      <button type="button" class="primary" id="draw" disabled>抽選する</button>
+      <button type="button" id="next" disabled>次を発表</button>
+      <span class="status" id="status" role="status" aria-live="polite">読み込み中…</span>
+    </div>
+    <p id="error" role="alert"></p>
+    <div id="results"></div>
+  </section>
+
+  <section id="repro" aria-labelledby="h-repro" hidden>
+    <h2 id="h-repro">再現用の情報</h2>
+    <p class="hint">この内容と同じ候補リスト・seed の文字列・賞を入れれば、同じ結果が出ます。</p>
+    <pre id="repro-json"></pre>
+    <div class="row" style="margin-top:8px"><button type="button" id="copy">コピー</button><span class="status" id="copy-status" role="status"></span></div>
+  </section>
+</main>
+
+<script type="module">
+import { load, seedFromText, normalizeCandidates } from "../sortition.js";
+
+const $ = (id) => document.getElementById(id);
+const els = {
+  candidates: $("candidates"), stages: $("stages"), seed: $("seed"), makeSeed: $("make-seed"),
+  candCount: $("cand-count"), candHash: $("cand-hash"), seedCommit: $("seed-commit"), seedU64: $("seed-u64"),
+  draw: $("draw"), next: $("next"), status: $("status"), error: $("error"), results: $("results"),
+  repro: $("repro"), reproJson: $("repro-json"), copy: $("copy"), copyStatus: $("copy-status"),
+};
+
+const sha256Hex = async (text) =>
+  [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+
+let sortition;
+let state = null; // { stages: [{name,count,winners}], queue: [{stage, index}], shown: number, repro }
+
+// 「名前: 人数」を 1 行ずつ読む
+function parseStages(text) {
+  const stages = [];
+  for (const [i, raw] of text.split(/\r\n|\n|\r/).entries()) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = line.match(/^(.+?)\s*[:：]\s*(\d+)$/);
+    if (!m) throw new Error(`賞の ${i + 1} 行目を読めません（「名前: 人数」の形で書いてください）: ${line}`);
+    stages.push({ name: m[1].trim(), count: Number(m[2]) });
+  }
+  if (stages.length === 0) throw new Error("賞を 1 つ以上入力してください");
+  return stages;
+}
+
+async function refreshInputs() {
+  const list = normalizeCandidates(els.candidates.value);
+  els.candCount.textContent = String(list.length);
+  els.candHash.textContent = list.length ? await sha256Hex(list.join("\n")) : "-";
+  const seedText = els.seed.value;
+  if (seedText) {
+    els.seedCommit.textContent = await sha256Hex(seedText);
+    els.seedU64.textContent = String(await seedFromText(seedText));
+  } else {
+    els.seedCommit.textContent = els.seedU64.textContent = "-";
+  }
+  els.draw.disabled = !sortition;
+}
+
+function setError(message) { els.error.textContent = message || ""; }
+
+function renderResults() {
+  els.results.replaceChildren();
+  for (const [si, stage] of state.stages.entries()) {
+    const wrap = document.createElement("div");
+    wrap.className = "stage";
+    const h = document.createElement("h3");
+    h.textContent = `${stage.name}（${stage.count} 人）`;
+    const ul = document.createElement("ul");
+    ul.className = "winners";
+    for (let i = 0; i < stage.count; i++) {
+      const li = document.createElement("li");
+      li.id = `w-${si}-${i}`;
+      li.textContent = "？？？";
+      ul.append(li);
+    }
+    wrap.append(h, ul);
+    els.results.append(wrap);
+  }
+}
+
+const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 表示だけの溜め演出（結果は抽選の時点で決まっていて、ここでは変わらない）
+async function reveal() {
+  if (!state || state.busy || state.shown >= state.queue.length) return;
+  state.busy = true;
+  els.next.disabled = true;
+  const { stage, index } = state.queue[state.shown];
+  const li = $(`w-${stage}-${index}`);
+  const winner = state.stages[stage].winners[index];
+  if (!reduceMotion()) {
+    li.classList.add("spinning");
+    const pool = state.pool;
+    const end = performance.now() + 2200;
+    while (performance.now() < end) {
+      li.textContent = pool[Math.floor(Math.random() * pool.length)];
+      await sleep(70);
+    }
+    li.classList.remove("spinning");
+  }
+  li.textContent = winner;
+  li.classList.add("done");
+  state.shown++;
+  state.busy = false;
+  if (state.shown < state.queue.length) {
+    const next = state.queue[state.shown];
+    els.next.disabled = false;
+    els.status.textContent = `次: ${state.stages[next.stage].name}（${state.shown + 1}/${state.queue.length}）`;
+  } else {
+    els.status.textContent = "すべて発表しました";
+    els.repro.hidden = false;
+  }
+}
+
+async function doDraw() {
+  setError("");
+  try {
+    const list = normalizeCandidates(els.candidates.value);
+    if (list.length === 0) throw new Error("候補を入力してください");
+    const stages = parseStages(els.stages.value);
+    const total = stages.reduce((a, s) => a + s.count, 0);
+    if (total > list.length) throw new Error(`当選者の合計（${total} 人）が候補数（${list.length}）を超えています`);
+    const seedText = els.seed.value;
+    if (!seedText) throw new Error("seed の文字列を入力してください（「ランダムに作る」も使えます）");
+    const seed = await seedFromText(seedText);
+    const result = sortition.drawStages(list, stages, { seed });
+    state = {
+      stages: result, pool: list, shown: 0, busy: false,
+      queue: result.flatMap((s, stage) => Array.from({ length: s.count }, (_, index) => ({ stage, index }))),
+    };
+    $("repro-json").textContent = JSON.stringify({
+      libsortition: sortition.version(),
+      seedText, seed: String(seed), seedCommit: els.seedCommit.textContent,
+      candidates: list.length, candidatesSha256: els.candHash.textContent,
+      stages: result.map((s) => ({ name: s.name, count: s.count, winners: s.winners })),
+    }, null, 2);
+    els.repro.hidden = true;
+    renderResults();
+    els.status.textContent = `抽選しました。「次を発表」で 1 人ずつ発表します（${state.queue.length} 人）`;
+    els.next.disabled = state.queue.length === 0;
+  } catch (e) {
+    setError(e.message);
+  }
+}
+
+els.candidates.addEventListener("input", refreshInputs);
+els.seed.addEventListener("input", refreshInputs);
+els.makeSeed.addEventListener("click", () => {
+  els.seed.value = [...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  refreshInputs();
+});
+els.draw.addEventListener("click", doDraw);
+els.next.addEventListener("click", reveal);
+els.copy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(els.reproJson.textContent);
+    els.copyStatus.textContent = "コピーしました";
+  } catch {
+    els.copyStatus.textContent = "コピーできませんでした。選択して手動でコピーしてください";
+  }
+});
+
+try {
+  sortition = await load(new URL("../sortition.wasm", import.meta.url));
+  els.status.textContent = `準備できました（libsortition ${sortition.version()}）`;
+} catch (e) {
+  setError(`抽選エンジン（WASM）を読み込めませんでした: ${e.message}`);
+  els.status.textContent = "";
+}
+await refreshInputs();
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "libsortition-wasm",
+  "version": "0.1.0",
+  "description": "libsortition の WASM バインディング（ブラウザ / Node、依存なし）",
+  "type": "module",
+  "main": "sortition.js",
+  "types": "sortition.d.ts",
+  "files": ["sortition.js", "sortition.d.ts", "sortition.wasm"],
+  "scripts": {
+    "build": "./build.sh",
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT OR Apache-2.0"
+}
