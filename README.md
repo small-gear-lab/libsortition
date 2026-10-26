@@ -107,6 +107,24 @@ cd bindings/node && npm install && npm run build && npm test   # Node.js
 bindings/wasm/build.sh                                          # needs: rustup target add wasm32-unknown-unknown
 ```
 
+## Fairness and security
+
+libsortition aims to be a fair lottery, not only a convenient one.
+
+What it does for you:
+
+- **Unbiased sampling.** Rejection sampling removes modulo bias, so every candidate has the same chance. The tests check the distribution.
+- **A strong random source by default.** Without a seed, a session draws from a cryptographic stream (ChaCha20, keyed from the OS). With a seed it uses xoshiro256\*\*, which is reproducible but not cryptographic.
+- **A draw can be checked afterwards.** The candidate set has a fingerprint that does not depend on order, and the seed can be committed to (for example as a SHA-256 hash) before the draw.
+- **Safe to keep and to retry.** A saved state can be sealed, so a browser can hold it without reading or altering it. An idempotency key stops a retried request from drawing twice.
+
+What it cannot do for you:
+
+- **Stop the organizer from steering the result.** Choosing a favorable seed, or throwing a result away and drawing again, cannot be prevented by code. For a draw that others must trust, publish the candidate-set fingerprint and the seed commitment first, then mix in a value that nobody controls (for example a public randomness beacon) to form the seed.
+- **Replace a review.** The library has not been audited, and 0.1 may still change. Rules about lotteries, prizes and record keeping are outside the library.
+
+Whatever `save()` returns contains the random generator's state. Give untrusted parties a sealed token instead.
+
 ## License
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Unless you state otherwise, any contribution you intentionally submit for inclusion in this project is licensed as above, without additional terms or conditions.
