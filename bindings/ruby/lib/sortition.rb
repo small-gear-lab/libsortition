@@ -58,6 +58,16 @@ module Sortition
   extern "int sortition_session_save(void*, void*)"
   extern "int sortition_session_load(void*, unsigned long, void*)"
   extern "void sortition_session_free(void*)"
+  extern "int sortition_item_ids(void*, void*, unsigned long, void*)"
+  extern "int sortition_item_fingerprint(void*, void*, unsigned long, void*)"
+  extern "int sortition_items_draw(void*, void*, unsigned long, unsigned int, void*, void*, void*)"
+  extern "int sortition_item_session_new(void*, void*, unsigned long, void*, void*)"
+  extern "int sortition_item_session_draw(void*, unsigned int, void*, void*)"
+  extern "unsigned int sortition_item_session_remaining(void*)"
+  extern "unsigned int sortition_item_session_drawn_count(void*)"
+  extern "int sortition_item_session_save(void*, void*)"
+  extern "int sortition_item_session_load(void*, unsigned long, void*, void*, unsigned long, void*)"
+  extern "void sortition_item_session_free(void*)"
   extern "void sortition_free(void*)"
   extern "const char* sortition_last_error()"
   extern "const char* sortition_version()"
@@ -197,6 +207,152 @@ module Sortition
     # self を捕まえないよう、クラスメソッドで作る
     def self.finalizer(addr)
       proc { Sortition.sortition_session_free(Fiddle::Pointer.new(addr)) }
+    end
+    private_class_method :finalizer
+  end
+
+  # 当選した候補。index は渡した items の中の位置、id は候補の ID（小文字 16 進 64 文字）。
+  Pick = Struct.new(:index, :id)
+
+  # 候補（String。バイト列としてそのまま扱う）を、連結バッファと長さ配列（size_t の packed）にする。
+  def self.pack_items(items)
+    chunks = items.map do |item|
+      raise TypeError, "candidate must be a String, not #{item.class}" unless item.is_a?(String)
+
+      item.b
+    end
+    [chunks.join.b, chunks.map(&:bytesize).pack("J*"), chunks.size]
+  end
+
+  def self.read_picks(indexes, ids, k)
+    return [] if k.zero?
+
+    idx = indexes[0, 4 * k].unpack("L#{k}")
+    raw = ids[0, 32 * k]
+    Array.new(k) { |i| Pick.new(idx[i], raw.byteslice(32 * i, 32).unpack1("H*")) }
+  end
+
+  # 各候補の ID（小文字 16 進 64 文字）を items と同じ並びで返す。
+  #
+  # ID は SHA-256(接頭辞 || バイト列 || 出現番号)。同じバイト列が複数あっても、
+  # 先頭から数えた出現番号が混ざるので ID は全候補で一意になる。
+  def self.item_ids(items)
+    data, lens, n = pack_items(items)
+    out = Fiddle::Pointer.malloc([32 * n, 1].max, Fiddle::RUBY_FREE)
+    rc = sortition_item_ids(data, lens, n, out)
+    raise Error.new(rc) unless rc.zero?
+
+    raw = n.zero? ? "" : out[0, 32 * n]
+    Array.new(n) { |i| raw.byteslice(32 * i, 32).unpack1("H*") }
+  end
+
+  # 候補集合の指紋（小文字 16 進 64 文字）。items の並びに依らない。
+  # 抽選前にシードと一緒に公開しておくと、あとから同じ候補集合だったか検証できる。
+  def self.item_fingerprint(items)
+    data, lens, n = pack_items(items)
+    out = Fiddle::Pointer.malloc(32, Fiddle::RUBY_FREE)
+    rc = sortition_item_fingerprint(data, lens, n, out)
+    raise Error.new(rc) unless rc.zero?
+
+    out[0, 32].unpack1("H*")
+  end
+
+  # items（String）から k 個を重複なしで抽選し、Array<Pick> で返す。
+  #
+  # 候補は ID の昇順に並べてから引くので、同じ候補集合とシードなら、items の並びが違っても
+  # 同じ候補が当選する（Pick#index は各 items の中の位置）。
+  def self.draw_items(items, k, seed: nil)
+    data, lens, n = pack_items(items)
+    seed_ptr = seed && Fiddle::Pointer[[seed].pack("Q")]
+    indexes = Fiddle::Pointer.malloc([4 * k, 1].max, Fiddle::RUBY_FREE)
+    ids = Fiddle::Pointer.malloc([32 * k, 1].max, Fiddle::RUBY_FREE)
+    rc = sortition_items_draw(data, lens, n, k, seed_ptr, indexes, ids)
+    raise Error.new(rc) unless rc.zero?
+
+    read_picks(indexes, ids, k)
+  end
+
+  # 候補集合を固定した抽選セッション（保存・復元つき）。
+  #
+  # #save の状態には引いた候補の ID と候補集合の指紋が入る。ItemSession.load では同じ候補集合
+  # （並びは違ってよい）を渡し直し、違えば Sortition::Error（code -8）。復元後の Pick#index は
+  # 渡し直した items の中の位置になる。1 つの ItemSession を複数スレッドから同時に使わないこと。
+  class ItemSession
+    def initialize(items, seed: nil)
+      data, lens, n = Sortition.pack_items(items)
+      out = Sortition.out_pointer
+      seed_ptr = seed && Fiddle::Pointer[[seed].pack("Q")]
+      rc = Sortition.sortition_item_session_new(data, lens, n, seed_ptr, out)
+      raise Error.new(rc) unless rc.zero?
+
+      adopt(Sortition.read_address(out))
+    end
+
+    # #save の出力と候補から復元する。
+    def self.load(state, items)
+      raw = state.b
+      data, lens, n = Sortition.pack_items(items)
+      out = Sortition.out_pointer
+      rc = Sortition.sortition_item_session_load(raw, raw.bytesize, data, lens, n, out)
+      unless rc.zero?
+        raise Error.new(rc, Sortition.sortition_last_error.to_s.dup.force_encoding("UTF-8"))
+      end
+
+      allocate.tap { |s| s.send(:adopt, Sortition.read_address(out)) }
+    end
+
+    # 続きから k 個引いて Array<Pick> で返す。残りを超えると Sortition::Error（状態は変わらない）。
+    def draw(k)
+      indexes = Fiddle::Pointer.malloc([4 * k, 1].max, Fiddle::RUBY_FREE)
+      ids = Fiddle::Pointer.malloc([32 * k, 1].max, Fiddle::RUBY_FREE)
+      rc = Sortition.sortition_item_session_draw(handle, k, indexes, ids)
+      raise Error.new(rc) unless rc.zero?
+
+      Sortition.read_picks(indexes, ids, k)
+    end
+
+    def remaining = Sortition.sortition_item_session_remaining(handle)
+
+    def drawn_count = Sortition.sortition_item_session_drawn_count(handle)
+
+    # 状態を JSON 文字列で返す。引いた候補の ID（"drawn"）と候補集合の指紋（"fingerprint"）を含む。
+    def save
+      out = Sortition.out_pointer
+      rc = Sortition.sortition_item_session_save(handle, out)
+      raise Error.new(rc) unless rc.zero?
+
+      addr = Sortition.read_address(out)
+      begin
+        Fiddle::Pointer.new(addr).to_s.force_encoding("UTF-8")
+      ensure
+        Sortition.sortition_free(Fiddle::Pointer.new(addr))
+      end
+    end
+
+    # コア側のセッションを解放する（以後の利用は IOError）。二重に呼んでもよい。
+    def close
+      return unless @addr
+
+      ObjectSpace.undefine_finalizer(self)
+      Sortition.sortition_item_session_free(Fiddle::Pointer.new(@addr))
+      @addr = nil
+    end
+
+    private
+
+    def adopt(addr)
+      @addr = addr
+      ObjectSpace.define_finalizer(self, self.class.send(:finalizer, addr))
+    end
+
+    def handle
+      raise IOError, "session is closed" unless @addr
+
+      Fiddle::Pointer.new(@addr)
+    end
+
+    def self.finalizer(addr)
+      proc { Sortition.sortition_item_session_free(Fiddle::Pointer.new(addr)) }
     end
     private_class_method :finalizer
   end
