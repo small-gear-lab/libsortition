@@ -2,10 +2,14 @@
 name = "sortition"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 description = "Minimal unbiased random lottery (sampling without replacement) core with a C ABI"
 license = "MIT OR Apache-2.0"
 readme = "../README.md"
 repository = "https://github.com/small-gear-lab/libsortition"
+homepage = "https://small-gear-lab.github.io/libsortition/"
+keywords = ["lottery", "random", "sampling", "sortition", "ffi"]
+categories = ["algorithms"]
 authors = ["marie-222 <289302950+marie-222@users.noreply.github.com>"]
 
 [lib]

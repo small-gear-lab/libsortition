@@ -48,6 +48,23 @@ jobs:
           path: target/release/libsortition.so
           if-no-files-found: error
 
+  # core/Cargo.toml の rust-version（最小の Rust）でビルドして、テストが通ること。
+  # 依存は、その Rust で動く版を選ぶ解決（fallback）で入れ直す（コミットしてある Cargo.lock は最新の版を使う）
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' core/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: rm Cargo.lock
+      - run: CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo generate-lockfile
+      - run: cargo test --locked -p sortition
+      - run: cargo test --locked -p sortition --no-default-features
+
   python:
     needs: core
     runs-on: ubuntu-latest
