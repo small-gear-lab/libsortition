@@ -64,7 +64,7 @@ fn aad(key_id: u8) -> Vec<u8> {
     a
 }
 
-fn seal_with_nonce(plaintext: &[u8], key: &Key, key_id: u8, nonce: &[u8; NONCE_LEN]) -> Result<String, i32> {
+pub(crate) fn seal_with_nonce(plaintext: &[u8], key: &Key, key_id: u8, nonce: &[u8; NONCE_LEN]) -> Result<String, i32> {
     let cipher = XChaCha20Poly1305::new(key.into());
     let ct = cipher
         .encrypt(XNonce::from_slice(nonce), Payload { msg: plaintext, aad: &aad(key_id) })

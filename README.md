@@ -158,6 +158,8 @@ What it cannot do for you:
 - **Stop the organizer from steering the result.** Choosing a favorable seed, or throwing a result away and drawing again, cannot be prevented by code. For a draw that others must trust, publish the candidate-set fingerprint and the seed commitment first, then mix in a value that nobody controls (for example a public randomness beacon) to form the seed.
 - **Replace a review.** The library has not been audited, and 0.1 may still change. Rules about lotteries, prizes and record keeping are outside the library.
 
+How a draw is made is written down exactly in [docs/SPEC.md](docs/SPEC.md), with [test vectors](test-vectors/vectors.json) and a [reference implementation](test-vectors/reference.py) written from that text alone, so that other programs can repeat a draw.
+
 Whatever `save()` returns contains the random generator's state. Give untrusted parties a sealed token instead.
 
 ## License

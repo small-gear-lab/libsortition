@@ -17,6 +17,8 @@ mod items;
 mod seal;
 mod seed;
 mod session;
+#[cfg(test)]
+mod vectors;
 pub use items::{candidate_ids, draw_items, set_fingerprint, Id, ItemSession, Pick};
 pub use seed::{seed_digest, seed_from_text};
 pub use seal::{open as open_sealed, seal as seal_state, token_key_id};
@@ -27,6 +29,11 @@ pub use data::{
 
 /// ライブラリのバージョン
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// 抽選のアルゴリズムの版の名前（docs/SPEC.md）。seed の決め方、乱数、候補の ID と並べ方、引き方、賞の切り分けが、
+/// 同じ入力に同じ結果を返す約束になっている。結果が変わる変更をするときは、この名前を新しくする。
+/// 抽選の記録に入れておくと、あとで別の版のアルゴリズムで検証してしまうのを防げる。
+pub const ALGORITHM: &str = "libsortition-draw/1";
 
 /// 成功
 pub const SORTITION_OK: i32 = 0;

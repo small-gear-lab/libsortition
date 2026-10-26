@@ -75,6 +75,17 @@ jobs:
       - run: cargo test --locked -p sortition --no-default-features
       - run: cargo test --locked -p sortition-cli
 
+  # 仕様書（docs/SPEC.md）だけから書いた参照実装が、共通のテストベクトルを再現できること。
+  # 仕様書とコードがずれていないことの確認になる
+  reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: python test-vectors/reference.py
+
   python:
     needs: core
     runs-on: ubuntu-latest
