@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # ワークフローで使っているアクションのバージョン
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # コアが使う Rust のクレート（ルートの Cargo.lock）
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+
+  # Node.js バインディングの開発用の依存（bindings/node の package-lock.json）。
+  # bindings/wasm は依存がないので対象外
+  - package-ecosystem: npm
+    directory: /bindings/node
+    schedule:
+      interval: weekly
+    groups:
+      node-dependencies:
+        patterns: ["*"]
