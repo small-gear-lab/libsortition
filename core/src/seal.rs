@@ -67,7 +67,7 @@ fn aad(key_id: u8) -> Vec<u8> {
 pub(crate) fn seal_with_nonce(plaintext: &[u8], key: &Key, key_id: u8, nonce: &[u8; NONCE_LEN]) -> Result<String, i32> {
     let cipher = XChaCha20Poly1305::new(key.into());
     let ct = cipher
-        .encrypt(XNonce::from_slice(nonce), Payload { msg: plaintext, aad: &aad(key_id) })
+        .encrypt(&XNonce::from(*nonce), Payload { msg: plaintext, aad: &aad(key_id) })
         .map_err(|_| crate::SORTITION_ERR_INTERNAL)?;
     let mut raw = Vec::with_capacity(1 + NONCE_LEN + ct.len());
     raw.push(key_id);
@@ -102,8 +102,9 @@ pub fn token_key_id(token: &str) -> Result<u8, StateError> {
 pub fn open(token: &str, key: &Key) -> Result<Vec<u8>, StateError> {
     let raw = parse(token)?;
     let key_id = raw[0];
+    let nonce = XNonce::try_from(&raw[1..1 + NONCE_LEN]).map_err(|_| StateError("sealed state is malformed".to_string()))?;
     XChaCha20Poly1305::new(key.into())
-        .decrypt(XNonce::from_slice(&raw[1..1 + NONCE_LEN]), Payload { msg: &raw[1 + NONCE_LEN..], aad: &aad(key_id) })
+        .decrypt(&nonce, Payload { msg: &raw[1 + NONCE_LEN..], aad: &aad(key_id) })
         .map_err(|_| StateError("sealed state cannot be opened (wrong key or tampered)".to_string()))
 }
 
