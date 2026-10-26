@@ -82,6 +82,7 @@ The `yaml` and `toml` features are on by default. The Python and Ruby bindings l
 | `core/` | the Rust crate (`cdylib` and `rlib`) and the C header |
 | `cli/` | the `sortition` command: draw from a list and verify a recorded draw |
 | `bindings/dotnet/` | .NET: C#, F#, VB.NET (P/Invoke, .NET 10) |
+| `bindings/go/` | Go (the WebAssembly build run with wazero, no cgo) |
 | `bindings/node/` | Node.js (N-API native addon) |
 | `bindings/php/` | PHP extension (PHP 8.2 or later) |
 | `bindings/python/` | Python (ctypes, no dependencies) |

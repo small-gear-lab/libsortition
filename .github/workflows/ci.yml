@@ -191,6 +191,24 @@ jobs:
       - run: npm test
         working-directory: bindings/wasm
 
+  # Go embeds the WebAssembly build, so it needs neither the native library nor a Rust toolchain
+  go:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.26", "1.27"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache-dependency-path: bindings/go/go.sum
+      - run: go vet ./...
+        working-directory: bindings/go
+      - run: go test -race ./...
+        working-directory: bindings/go
+
   dotnet:
     needs: core
     runs-on: ubuntu-latest
