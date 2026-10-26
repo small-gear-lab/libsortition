@@ -8,7 +8,7 @@
 
 > **状態: 実験的（0.1）。** インターフェースは 1.0 までに変わるかもしれません。
 
-**試す:** [デモ](https://small-gear-lab.github.io/libsortition/next/demo/)では、貼り付けたリストから賞ごとに抽選できます。すべてのビルドは <https://small-gear-lab.github.io/libsortition/> に並んでいます。
+**試す:** [デモ](https://small-gear-lab.github.io/libsortition/latest/demo/)では、貼り付けたリストから賞ごとに抽選できます。すべてのビルドは <https://small-gear-lab.github.io/libsortition/> に並んでいます。
 
 ## クイックスタート
 
@@ -17,7 +17,7 @@
 **コマンドライン**（[詳しく](#コマンドライン)）:
 
 ```sh
-cargo install --path cli                 # チェックアウトから
+cargo install sortition-cli             # リリースのページからバイナリを取ることもできる
 printf 'alice\nbob\ncarol\ndave\n' > names.txt
 sortition draw names.txt --seed "my seed" -k 2
 ```
@@ -62,7 +62,18 @@ for (const pick of s.drawItems(people, 2, { seed })) console.log(people[pick.ind
 
 ## インストールとビルド
 
-まだ何も公開していません（0.1）。最初のリリースでは、crates.io（`sortition` と `sortition-cli`）、GitHub Releases（コマンドと共有ライブラリ）、npm（`libsortition-wasm`）、GitHub Pages のビルドを公開する予定です。それまでは、チェックアウトからビルドしてください。
+公開している場所は次のとおりです。
+
+| 何を | どこで |
+|---|---|
+| Rust のクレート | [crates.io: `sortition`](https://crates.io/crates/sortition) |
+| `sortition` コマンド | `cargo install sortition-cli`（[crates.io](https://crates.io/crates/sortition-cli)）、または[リリースのページ](https://github.com/small-gear-lab/libsortition/releases)のバイナリ |
+| 共有ライブラリと C のヘッダ | [リリースのページ](https://github.com/small-gear-lab/libsortition/releases)（Linux、macOS、Windows） |
+| WebAssembly | [npm: `libsortition-wasm`](https://www.npmjs.com/package/libsortition-wasm)、[デモとビルド](https://small-gear-lab.github.io/libsortition/) |
+| .NET | [NuGet: `Sortition`](https://www.nuget.org/packages/Sortition)（実行時に共有ライブラリが要ります） |
+| Python、Ruby、PHP、Go、Java と Kotlin、Swift、Dart | いまのところ、このリポジトリのチェックアウトから |
+
+リリースのページのファイルはすべて `SHA256SUMS` に載っていて、ビルドの来歴の証明（attestation）が付いています（`gh attestation verify <ファイル> --repo small-gear-lab/libsortition`）。チェックアウトからすべてをビルドするには:
 
 ```sh
 cargo build --release                         # target/release/libsortition.so（.dylib、.dll）
@@ -192,7 +203,7 @@ new_token = lot.seal(key)                          # picks と new_token をブ�
 `sortition` コマンドは、リストからの抽選と、記録した抽選の検証ができます。ライブラリと同じコードで動くので、同じ候補と seed なら、どのバインディングとも同じ当選者になります。
 
 ```sh
-cargo install --path cli                 # チェックアウトから。`sortition` コマンドが入る
+cargo install sortition-cli             # `sortition` コマンドが入る（リリースのページのバイナリでもよい）
 
 sortition commit "my seed"               # 抽選の前に公開するコミット値と、seed の数値
 sortition draw names.txt --seed "my seed" --stage "副賞:3" --stage "大賞:1" --record record.json

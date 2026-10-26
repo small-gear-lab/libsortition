@@ -8,7 +8,7 @@ A small library for fair random lotteries: it picks `k` of `n` candidates withou
 
 > **Status: experimental (0.1).** The interface may change before 1.0.
 
-**Try it:** the [demo](https://small-gear-lab.github.io/libsortition/next/demo/) draws prizes from a list you paste in. All builds are listed at <https://small-gear-lab.github.io/libsortition/>.
+**Try it:** the [demo](https://small-gear-lab.github.io/libsortition/latest/demo/) draws prizes from a list you paste in. All builds are listed at <https://small-gear-lab.github.io/libsortition/>.
 
 ## Quick start
 
@@ -17,7 +17,7 @@ The programs below print the same winners (`dave`, then `bob`) for the same cand
 **Command line** ([more](#command-line)):
 
 ```sh
-cargo install --path cli                 # from a checkout
+cargo install sortition-cli             # or download it from the releases page
 printf 'alice\nbob\ncarol\ndave\n' > names.txt
 sortition draw names.txt --seed "my seed" -k 2
 ```
@@ -62,7 +62,18 @@ Use the candidate functions (`draw_items` / `drawItems`, `draw_stages` / `drawSt
 
 ## Install and build
 
-Nothing is published yet (0.1). The first release is planned for crates.io (`sortition` and `sortition-cli`), GitHub Releases (the command and the shared library), npm (`libsortition-wasm`) and the GitHub Pages builds. Until then, build from a checkout:
+Where each part is published:
+
+| what | where |
+|---|---|
+| the Rust crate | [crates.io: `sortition`](https://crates.io/crates/sortition) |
+| the `sortition` command | `cargo install sortition-cli` ([crates.io](https://crates.io/crates/sortition-cli)), or a binary on the [releases page](https://github.com/small-gear-lab/libsortition/releases) |
+| the shared library and C header | the [releases page](https://github.com/small-gear-lab/libsortition/releases) (Linux, macOS, Windows) |
+| WebAssembly | [npm: `libsortition-wasm`](https://www.npmjs.com/package/libsortition-wasm), and the [demo and builds](https://small-gear-lab.github.io/libsortition/) |
+| .NET | [NuGet: `Sortition`](https://www.nuget.org/packages/Sortition) (it needs the shared library at run time) |
+| Python, Ruby, PHP, Go, Java and Kotlin, Swift, Dart | from a checkout of this repository, for now |
+
+Every file on the releases page is listed in `SHA256SUMS` and has a build provenance attestation (`gh attestation verify <file> --repo small-gear-lab/libsortition`). To build everything from a checkout:
 
 ```sh
 cargo build --release                         # target/release/libsortition.so (.dylib, .dll)
@@ -192,7 +203,7 @@ Nothing here stops an organizer from throwing the result away and starting a new
 `sortition` draws from a list and checks a recorded draw. It runs the same code as the libraries, so it gives the same winners as every binding for the same candidates and seed.
 
 ```sh
-cargo install --path cli                 # from a checkout; installs the `sortition` command
+cargo install sortition-cli             # installs the `sortition` command (or use a binary from the releases page)
 
 sortition commit "my seed"               # the commitment to publish before the draw, and the seed number
 sortition draw names.txt --seed "my seed" --stage "Runner-up:3" --stage "Grand prize:1" --record record.json
