@@ -12,7 +12,8 @@ A small library for unbiased random lotteries: it picks `k` of `n` candidates wi
 - **Reproducible when you want it.** With no seed the OS random source is used; with a seed (a `u64`) the same seed gives the same result.
 - **Candidates from text or data.** One candidate per line of text (surrounding spaces are trimmed, empty lines are dropped), or an array inside JSON, YAML or TOML (`path` such as `a.b.0` says where the array is). YAML aliases, custom tags and multiple documents are rejected.
 - **Sessions: keep drawing where you left off.** A session holds `0..n` and draws without replacement each time you call it. Its state can be saved as JSON and restored later, so the draw can continue from a database or a file. With a seed, drawing in several steps gives the same order as one big `draw(n, k1 + k2 + ..., seed)`. A saved state that is malformed or inconsistent is rejected.
-- **A C ABI.** The header is [core/include/sortition.h](core/include/sortition.h): `sortition_draw`, `sortition_draw_text`, `sortition_draw_data`, `sortition_session_*`, `sortition_free`, `sortition_last_error`, `sortition_version`.
+- **Any bytes as candidates, identified by stable IDs.** Pass arbitrary byte strings and each one gets a unique ID that does not depend on its position: `SHA-256(prefix ‖ bytes ‖ occurrence)`, where the occurrence number tells identical byte strings apart. Candidates are sorted by ID before drawing, so the same candidate set and seed give the same winners whatever the input order. A set fingerprint (a hash of the sorted IDs) can be published before the draw and checked afterwards. Item sessions save the drawn IDs and the fingerprint, and can only be resumed with the same candidate set (in any order).
+- **A C ABI.** The header is [core/include/sortition.h](core/include/sortition.h): `sortition_draw`, `sortition_draw_text`, `sortition_draw_data`, `sortition_session_*`, `sortition_item_*`, `sortition_items_draw`, `sortition_free`, `sortition_last_error`, `sortition_version`.
 
 ## Layout
 
@@ -50,6 +51,18 @@ lot.draw(3)                                 # the first 3
 state = lot.save()                          # JSON string; store it anywhere
 sortition.Session.load(state).draw(2)       # the next 2, as if never interrupted
 ```
+
+```python
+people = [b"alice", b"bob", "carol"]        # bytes, or str (UTF-8)
+sortition.item_fingerprint(people)          # same for any order; publish it with the seed
+picks = sortition.draw_items(people, 2, seed=42)   # [Pick(index=1, id="53…"), …]
+lot = sortition.ItemSession(people, seed=42)
+lot.draw(1)
+state = lot.save()                          # includes the drawn IDs and the fingerprint
+sortition.ItemSession.load(state, reversed(people)).draw(1)   # same set, any order
+```
+
+Byte-string candidates are in every binding too: `draw_items` / `ItemSession` (Python), `Sortition.draw_items` / `Sortition::ItemSession` (Ruby), `drawItems` / `createItemSession` / `loadItemSession` (Node.js and WebAssembly), and `sortition_draw_items` / `SortitionItemSession` (PHP). IDs and fingerprints are lowercase hex strings, and a pick is `index` (the position in the list you passed) plus `id`.
 
 Sessions are in every binding: `Session` (Python), `Sortition::Session` (Ruby), `createSession` / `loadSession` (Node.js and WebAssembly), and `SortitionSession` (PHP).
 

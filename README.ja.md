@@ -12,7 +12,8 @@
 - **必要なときは再現できる。** シードなしなら OS の乱数源を使い、シード（`u64`）を指定すると同じシードで同じ結果になります。
 - **テキストやデータから候補を取る。** 1 行 1 候補のテキスト（前後の空白は除き、空行は捨てます）か、JSON・YAML・TOML の中にある配列（`a.b.0` のような `path` で場所を指定）。YAML のエイリアス・独自タグ・複数ドキュメントは拒否します。
 - **セッションで続きから引ける。** セッションは `0..n` を母集団として、呼ぶたびに非復元抽出します。状態は JSON で保存して後から復元できるので、DB やファイルに預けて抽選を続けられます。シードを指定すれば、何回に分けて引いても `draw(n, k1 + k2 + ..., seed)` を一度に引いたときと同じ並びになります。形式が壊れている、または中身が矛盾している保存状態は拒否します。
-- **C ABI。** ヘッダは [core/include/sortition.h](core/include/sortition.h) で、`sortition_draw`、`sortition_draw_text`、`sortition_draw_data`、`sortition_session_*`、`sortition_free`、`sortition_last_error`、`sortition_version` があります。
+- **任意のバイト列を候補にして、位置に依らない一意な ID で識別する。** 任意のバイト列を渡すと、各候補に `SHA-256(接頭辞 ‖ バイト列 ‖ 出現番号)` の ID が付きます。出現番号は同じバイト列どうしを区別するためのものです。抽選は ID の昇順に並べてから引くので、同じ候補集合とシードなら、入力の並びが違っても同じ候補が当選します。候補集合の指紋（昇順の ID のハッシュ）を抽選前に公開しておけば、あとから検証できます。バイト列版のセッションは、引いた ID と指紋を保存し、同じ候補集合（並びは問わない）でだけ再開できます。
+- **C ABI。** ヘッダは [core/include/sortition.h](core/include/sortition.h) で、`sortition_draw`、`sortition_draw_text`、`sortition_draw_data`、`sortition_session_*`、`sortition_item_*`、`sortition_items_draw`、`sortition_free`、`sortition_last_error`、`sortition_version` があります。
 
 ## 構成
 
@@ -50,6 +51,18 @@ lot.draw(3)                                 # 最初の 3 個
 state = lot.save()                          # JSON 文字列。どこに保存してもよい
 sortition.Session.load(state).draw(2)       # 次の 2 個。途切れなかったときと同じ続き
 ```
+
+```python
+people = [b"alice", b"bob", "carol"]        # bytes か str（UTF-8）
+sortition.item_fingerprint(people)          # 並びに依らない。シードと一緒に公開する
+picks = sortition.draw_items(people, 2, seed=42)   # [Pick(index=1, id="53…"), …]
+lot = sortition.ItemSession(people, seed=42)
+lot.draw(1)
+state = lot.save()                          # 引いた ID と指紋を含む
+sortition.ItemSession.load(state, reversed(people)).draw(1)   # 同じ集合なら並びは自由
+```
+
+バイト列の候補もどのバインディングにもあります: `draw_items` / `ItemSession`（Python）、`Sortition.draw_items` / `Sortition::ItemSession`（Ruby）、`drawItems` / `createItemSession` / `loadItemSession`（Node.js と WebAssembly）、`sortition_draw_items` / `SortitionItemSession`（PHP）。ID と指紋は小文字の 16 進文字列で、当選は `index`（渡したリストの中の位置）と `id` です。
 
 セッションはどのバインディングにもあります: `Session`（Python）、`Sortition::Session`（Ruby）、`createSession` / `loadSession`（Node.js と WebAssembly）、`SortitionSession`（PHP）。
 
