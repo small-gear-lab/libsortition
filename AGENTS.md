@@ -34,6 +34,7 @@ cargo test -p sortition                  # core tests
 | WebAssembly | `rustup target add wasm32-unknown-unknown`, then `bindings/wasm/build.sh`, then `cd bindings/wasm && npm test` |
 | PHP | `cd bindings/php && phpize && ./configure --with-sortition && make && NO_INTERACTION=1 make test TESTS=tests`, then `phpize --clean` |
 
+- CI (`.github/workflows/ci.yml`) runs on Linux: the core tests (with and without the default features), `clippy` with `-D warnings` (default features, no default features, and wasm32), and every binding. PHP 8.4 must pass; the other PHP versions only report. Before pushing, run `cargo clippy --all-targets --locked -p sortition -- -D warnings`. `rustfmt` is not enforced yet (the code is not formatted with it).
 - Python and Ruby find the library through `LIBSORTITION_PATH`, next to the module, or in `target/release`.
 - `bindings/wasm/sortition.wasm` is a build output and is ignored. `.cargo/config.toml` selects the `getrandom` custom backend for the wasm target.
 - PHP: `phpize` may belong to a different PHP than `php` on `PATH`. Run the extension with `$(php-config --php-binary)`. The shims aim at PHP 7.4+, but only 8.4 has been run. `phpize` leaves many files behind (most are ignored); run `phpize --clean` and check `git status` before committing.

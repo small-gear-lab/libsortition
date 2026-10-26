@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # コアのテストと lint。バインディングが読み込む共有ライブラリもここで作る
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p sortition
+      - run: cargo test --locked -p sortition --no-default-features
+      - run: cargo clippy --all-targets --locked -p sortition -- -D warnings
+      - run: cargo clippy --locked -p sortition --no-default-features -- -D warnings
+      # wasm には OS の乱数源がないので、.cargo/config.toml の custom backend で解く（ビルドできることの確認）
+      - run: cargo clippy --locked --release --target wasm32-unknown-unknown -p sortition -- -D warnings
+      - run: cargo build --release --locked -p sortition
+      - uses: actions/upload-artifact@v7
+        with:
+          name: libsortition-linux
+          path: target/release/libsortition.so
+          if-no-files-found: error
+
+  python:
+    needs: core
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: libsortition-linux
+          path: target/release
+      - run: python -m unittest discover -s bindings/python/tests -v
+
+  ruby:
+    needs: core
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.3", "3.4"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: libsortition-linux
+          path: target/release
+      - run: ruby -Ibindings/ruby/lib bindings/ruby/test/sortition_test.rb
+
+  node:
+    needs: core
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+    defaults:
+      run:
+        working-directory: bindings/node
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: libsortition-linux
+          path: target/release
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  # WebAssembly はネイティブの共有ライブラリを使わず、wasm32 向けに自分でビルドする
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: bindings/wasm/build.sh
+      - run: npm test
+        working-directory: bindings/wasm
+
+  php:
+    needs: core
+    runs-on: ubuntu-latest
+    # 動作を確かめているのは 8.4 だけ。それ以外は結果を見るだけで、失敗してもワークフローは落とさない
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { php: "8.4", experimental: false }
+          - { php: "8.3", experimental: true }
+          - { php: "8.2", experimental: true }
+          - { php: "8.1", experimental: true }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: libsortition-linux
+          path: target/release
+      - name: Build the extension
+        working-directory: bindings/php
+        run: |
+          phpize
+          ./configure --with-sortition
+          make
+      - name: Run the phpt tests
+        working-directory: bindings/php
+        env:
+          NO_INTERACTION: "1"
+          REPORT_EXIT_STATUS: "1"
+        run: make test TESTS=tests

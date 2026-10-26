@@ -1,5 +1,7 @@
 # libsortition
 
+[![CI](https://github.com/small-gear-lab/libsortition/actions/workflows/ci.yml/badge.svg)](https://github.com/small-gear-lab/libsortition/actions/workflows/ci.yml)
+
 [日本語](README.ja.md)
 
 A small library for unbiased random lotteries: it picks `k` of `n` candidates without replacement. One Rust core with a C ABI, and bindings for Node.js, PHP, Python, Ruby and WebAssembly.

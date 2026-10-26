@@ -1,5 +1,7 @@
 # libsortition
 
+[![CI](https://github.com/small-gear-lab/libsortition/actions/workflows/ci.yml/badge.svg)](https://github.com/small-gear-lab/libsortition/actions/workflows/ci.yml)
+
 [English](README.md)
 
 偏りのない無作為抽選のための小さなライブラリです。`n` 個の候補から `k` 個を重複なしで選びます（非復元抽出）。C ABI を持つ Rust 製のコアが 1 つあり、Node.js、PHP、Python、Ruby、WebAssembly 向けのバインディングがあります。
