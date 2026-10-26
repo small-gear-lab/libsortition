@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-__all__ = ["draw", "draw_text", "draw_data", "version", "SortitionError"]
+__all__ = ["draw", "draw_text", "draw_data", "version", "Session", "SortitionError"]
 
 _ERRORS = {
     -1: "invalid argument (k > n?)",
@@ -14,6 +14,7 @@ _ERRORS = {
     -5: "path not found or not an array",
     -6: "unsupported format",
     -7: "internal error",
+    -8: "invalid session state",
 }
 
 _FORMATS = {"json": 0, "yaml": 1, "toml": 2}
@@ -70,6 +71,22 @@ _lib.sortition_last_error.argtypes = []
 _lib.sortition_last_error.restype = ctypes.c_char_p
 _lib.sortition_version.argtypes = []
 _lib.sortition_version.restype = ctypes.c_char_p
+_SESSION_P = ctypes.c_void_p
+_lib.sortition_session_new.argtypes = [
+    ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(_SESSION_P)]
+_lib.sortition_session_new.restype = ctypes.c_int32
+_lib.sortition_session_draw.argtypes = [_SESSION_P, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+_lib.sortition_session_draw.restype = ctypes.c_int32
+_lib.sortition_session_remaining.argtypes = [_SESSION_P]
+_lib.sortition_session_remaining.restype = ctypes.c_uint32
+_lib.sortition_session_drawn_count.argtypes = [_SESSION_P]
+_lib.sortition_session_drawn_count.restype = ctypes.c_uint32
+_lib.sortition_session_save.argtypes = [_SESSION_P, ctypes.POINTER(ctypes.c_void_p)]
+_lib.sortition_session_save.restype = ctypes.c_int32
+_lib.sortition_session_load.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(_SESSION_P)]
+_lib.sortition_session_load.restype = ctypes.c_int32
+_lib.sortition_session_free.argtypes = [_SESSION_P]
+_lib.sortition_session_free.restype = None
 
 
 def draw(n, k, seed=None):
@@ -120,6 +137,81 @@ def draw_data(text, k, format, path="", seed=None):
         return json.loads(ctypes.string_at(out.value).decode("utf-8"))
     finally:
         _lib.sortition_free(out)
+
+
+class Session:
+    """抽選セッション。0..n-1 から呼ぶたびに続きから非復元抽出する。
+
+    save() で状態を JSON 文字列にでき、Session.load() で復元して続きから引ける。
+    seed 指定ありなら、何回に分けて引いても draw(n, k1 + k2 + ..., seed) と同じ並びになる。
+    1 つの Session を複数スレッドから同時に使わないこと。
+    """
+
+    def __init__(self, n, seed=None):
+        handle = _SESSION_P()
+        seed_ptr = None if seed is None else ctypes.byref(ctypes.c_uint64(seed))
+        rc = _lib.sortition_session_new(n, seed_ptr, ctypes.byref(handle))
+        if rc != 0:
+            raise SortitionError(rc)
+        self._handle = handle
+
+    @classmethod
+    def load(cls, state):
+        """save() の出力（str か bytes）から復元する。不正な状態は SortitionError。"""
+        data = state.encode("utf-8") if isinstance(state, str) else bytes(state)
+        handle = _SESSION_P()
+        rc = _lib.sortition_session_load(data, len(data), ctypes.byref(handle))
+        if rc != 0:
+            detail = _lib.sortition_last_error()
+            raise SortitionError(rc, detail.decode("utf-8", "replace") if detail else None)
+        self = cls.__new__(cls)
+        self._handle = handle
+        return self
+
+    def _live(self):
+        if not self._handle:
+            raise ValueError("session is closed")
+        return self._handle
+
+    def draw(self, k):
+        """続きから k 個引いて list で返す。残りを超えると SortitionError（状態は変わらない）。"""
+        out = (ctypes.c_uint32 * k)()
+        rc = _lib.sortition_session_draw(self._live(), k, out)
+        if rc != 0:
+            raise SortitionError(rc)
+        return list(out)
+
+    @property
+    def remaining(self):
+        return _lib.sortition_session_remaining(self._live())
+
+    @property
+    def drawn_count(self):
+        return _lib.sortition_session_drawn_count(self._live())
+
+    def save(self):
+        """状態を JSON 文字列で返す。引いた結果（"drawn"）も含む。"""
+        out = ctypes.c_void_p()
+        rc = _lib.sortition_session_save(self._live(), ctypes.byref(out))
+        if rc != 0:
+            raise SortitionError(rc)
+        try:
+            return ctypes.string_at(out.value).decode("utf-8")
+        finally:
+            _lib.sortition_free(out)
+
+    def close(self):
+        if self._handle:
+            _lib.sortition_session_free(self._handle)
+            self._handle = None
+
+    __del__ = close
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 def version():
