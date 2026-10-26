@@ -16,7 +16,8 @@ module Sortition
     -5 => "path not found or not an array",
     -6 => "unsupported format",
     -7 => "internal error",
-    -8 => "invalid session state"
+    -8 => "invalid session state",
+    -9 => "idempotency key was already used with a different request"
   }.freeze
 
   FORMATS = { json: 0, yaml: 1, toml: 2 }.freeze
@@ -68,6 +69,17 @@ module Sortition
   extern "int sortition_item_session_save(void*, void*)"
   extern "int sortition_item_session_load(void*, unsigned long, void*, void*, unsigned long, void*)"
   extern "void sortition_item_session_free(void*)"
+  extern "int sortition_session_draw_keyed(void*, unsigned int, void*, void*, void*)"
+  extern "unsigned long long sortition_session_revision(void*)"
+  extern "int sortition_session_id(void*, void*)"
+  extern "int sortition_session_seal(void*, void*, unsigned char, void*)"
+  extern "int sortition_session_unseal(void*, unsigned long, void*, void*)"
+  extern "int sortition_item_session_draw_keyed(void*, unsigned int, void*, void*, void*, void*)"
+  extern "unsigned long long sortition_item_session_revision(void*)"
+  extern "int sortition_item_session_id(void*, void*)"
+  extern "int sortition_item_session_seal(void*, void*, unsigned char, void*)"
+  extern "int sortition_item_session_unseal(void*, unsigned long, void*, void*, void*, unsigned long, void*)"
+  extern "int sortition_seal_key_id(void*, unsigned long, void*)"
   extern "void sortition_free(void*)"
   extern "const char* sortition_last_error()"
   extern "const char* sortition_version()"
@@ -117,6 +129,53 @@ module Sortition
     end
   end
 
+  # 羃等キー（String、1〜128 バイト）を C 文字列用のバイト列にする。nil ならキーなし（NULL）。
+  def self.idem_key(key)
+    return nil if key.nil?
+    raise TypeError, "key must be a String or nil" unless key.is_a?(String)
+    raise ArgumentError, "key must not contain NUL" if key.include?("\0")
+
+    "#{key}\0".b
+  end
+
+  # 封をする鍵（ちょうど 32 バイトの String）をバイト列にする。
+  def self.secret(key)
+    raise ArgumentError, "key must be exactly 32 bytes" unless key.is_a?(String) && key.bytesize == 32
+
+    key.b
+  end
+
+  def self.error_with_detail(rc)
+    Error.new(rc, sortition_last_error.to_s.dup.force_encoding("UTF-8"))
+  end
+
+  # セッションの識別子（小文字 16 進 32 文字）を読む。fn はセッションの種類ごとの C 関数名。
+  def self.read_id(fn, handle)
+    buf = Fiddle::Pointer.malloc(33, Fiddle::RUBY_FREE)
+    send(fn, handle, buf)
+    buf[0, 32]
+  end
+
+  # 封をしたトークンを取り出して C 側の領域を解放する。
+  def self.take_token(out)
+    addr = read_address(out)
+    begin
+      Fiddle::Pointer.new(addr).to_s.force_encoding("ASCII")
+    ensure
+      sortition_free(Fiddle::Pointer.new(addr))
+    end
+  end
+
+  # 封をしたトークンに記された鍵 ID（0〜255）。鍵を入れ替えている場合に、開く前に鍵を選ぶのに使う。
+  def self.seal_key_id(token)
+    raw = token.b
+    out = Fiddle::Pointer.malloc(1, Fiddle::RUBY_FREE)
+    rc = sortition_seal_key_id(raw, raw.bytesize, out)
+    raise error_with_detail(rc) unless rc.zero?
+
+    out[0, 1].unpack1("C")
+  end
+
   # ポインタ 1 個分の out 領域を確保して 0 で埋める
   def self.out_pointer
     out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
@@ -154,12 +213,41 @@ module Sortition
     end
 
     # 続きから k 個引いて Array で返す。残りを超えると Sortition::Error（状態は変わらない）。
-    def draw(k)
+    #
+    # key（羃等キー、String、1〜128 バイト）を付けると、同じ key と同じ k の再送は、状態を変えずに
+    # 前回と同じ結果を返す。同じ key で別の k は Sortition::Error（code -9）。
+    def draw(k, key: nil)
       out = Fiddle::Pointer.malloc([4 * k, 1].max, Fiddle::RUBY_FREE)
-      rc = Sortition.sortition_session_draw(handle, k, out)
+      rc = Sortition.sortition_session_draw_keyed(handle, k, Sortition.idem_key(key), out, nil)
       raise Error.new(rc) unless rc.zero?
 
       k.zero? ? [] : out[0, 4 * k].unpack("L#{k}")
+    end
+
+    # 状態を変えた draw の回数。保存側が「読んだ revision のときだけ更新する」ために使える。
+    def revision = Sortition.sortition_session_revision(handle)
+
+    # セッションの識別子（小文字 16 進 32 文字）。作成時に OS から取った値。
+    def id = Sortition.read_id(:sortition_session_id, handle)
+
+    # 状態に封をしたトークン（String）を返す。乱数の内部状態を相手に見せずに預けられる。
+    # key は 32 バイトの秘密鍵、key_id は鍵の入れ替え用の目印（0〜255）。
+    def seal(key, key_id: 0)
+      out = Sortition.out_pointer
+      rc = Sortition.sortition_session_seal(handle, Sortition.secret(key), key_id, out)
+      raise Error.new(rc) unless rc.zero?
+
+      Sortition.take_token(out)
+    end
+
+    # #seal のトークンから復元する。形式の不正・鍵違い・改ざんは Sortition::Error（code -8）。
+    def self.unseal(token, key)
+      raw = token.b
+      out = Sortition.out_pointer
+      rc = Sortition.sortition_session_unseal(raw, raw.bytesize, Sortition.secret(key), out)
+      raise Sortition.error_with_detail(rc) unless rc.zero?
+
+      allocate.tap { |s| s.send(:adopt, Sortition.read_address(out)) }
     end
 
     # まだ引いていない数
@@ -302,13 +390,40 @@ module Sortition
     end
 
     # 続きから k 個引いて Array<Pick> で返す。残りを超えると Sortition::Error（状態は変わらない）。
-    def draw(k)
+    # key（羃等キー）の扱いは Session#draw と同じ。
+    def draw(k, key: nil)
       indexes = Fiddle::Pointer.malloc([4 * k, 1].max, Fiddle::RUBY_FREE)
       ids = Fiddle::Pointer.malloc([32 * k, 1].max, Fiddle::RUBY_FREE)
-      rc = Sortition.sortition_item_session_draw(handle, k, indexes, ids)
+      rc = Sortition.sortition_item_session_draw_keyed(handle, k, Sortition.idem_key(key), indexes, ids, nil)
       raise Error.new(rc) unless rc.zero?
 
       Sortition.read_picks(indexes, ids, k)
+    end
+
+    # 状態を変えた draw の回数。
+    def revision = Sortition.sortition_item_session_revision(handle)
+
+    # セッションの識別子（小文字 16 進 32 文字）。
+    def id = Sortition.read_id(:sortition_item_session_id, handle)
+
+    # 状態に封をしたトークンを返す。引数と注意は Session#seal と同じ。
+    def seal(key, key_id: 0)
+      out = Sortition.out_pointer
+      rc = Sortition.sortition_item_session_seal(handle, Sortition.secret(key), key_id, out)
+      raise Error.new(rc) unless rc.zero?
+
+      Sortition.take_token(out)
+    end
+
+    # #seal のトークンと、同じ候補集合（並びは違ってよい）から復元する。
+    def self.unseal(token, key, items)
+      raw = token.b
+      data, lens, n = Sortition.pack_items(items)
+      out = Sortition.out_pointer
+      rc = Sortition.sortition_item_session_unseal(raw, raw.bytesize, Sortition.secret(key), data, lens, n, out)
+      raise Sortition.error_with_detail(rc) unless rc.zero?
+
+      allocate.tap { |s| s.send(:adopt, Sortition.read_address(out)) }
     end
 
     def remaining = Sortition.sortition_item_session_remaining(handle)
