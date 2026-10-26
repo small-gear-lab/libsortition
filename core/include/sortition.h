@@ -102,6 +102,24 @@ uint64_t sortition_session_revision(const sortition_session *s);
 /* セッションの識別子（小文字 16 進 32 文字 + NUL）を out[0..33] に書く。作成時に OS から取った値。 */
 int32_t sortition_session_id(const sortition_session *s, uint8_t *out);
 
+/* ---- 状態に封をする ----
+ * sortition_session_save の出力には乱数の内部状態が入る（持っている者は以降の当選を予測でき、
+ * 偽の状態も作れる）。信頼できない相手（ブラウザなど）に状態を預けるときは、封をしたトークンを渡す。
+ * 認証付き暗号（XChaCha20-Poly1305）で、鍵を持つ側だけが開け、1 ビットでも変えれば開けなくなる。
+ *
+ * トークンは "sortition1." で始まる ASCII 文字列（base64url、パディングなし）。
+ * key は 32 バイトの秘密鍵（暗号論的乱数で作る）。key_id は鍵の入れ替え用の目印（0〜255）で、
+ * sortition_seal_key_id で読んでから、対応する鍵を選んで開く。
+ * 形式の不正・鍵違い・改ざんはどれも SORTITION_ERR_STATE（理由は区別しない）。 */
+
+/* トークンに記された鍵 ID を *out_key_id に書く（形式が不正なら SORTITION_ERR_STATE） */
+int32_t sortition_seal_key_id(const uint8_t *token, size_t len, uint8_t *out_key_id);
+
+/* 状態に封をしたトークンを *out に返す（sortition_free で解放） */
+int32_t sortition_session_seal(const sortition_session *s, const uint8_t *key, uint8_t key_id, char **out);
+int32_t sortition_session_unseal(const uint8_t *token, size_t len, const uint8_t *key,
+                                 sortition_session **out);
+
 void sortition_session_free(sortition_session *s); /* NULL は無視 */
 
 /* ---- バイト列の候補を抽選する ----
@@ -145,6 +163,13 @@ int32_t sortition_item_session_draw_keyed(sortition_item_session *s, uint32_t k,
                                           uint32_t *out_index, uint8_t *out_ids, int32_t *replayed);
 uint64_t sortition_item_session_revision(const sortition_item_session *s);
 int32_t sortition_item_session_id(const sortition_item_session *s, uint8_t *out); /* 33 バイト */
+/* 状態に封をしたトークンを *out に返す（sortition_free で解放）。引数と注意は sortition_session_seal と同じ。
+ * 開くときは同じ候補集合（並びは違ってよい）を渡し直す。違えば SORTITION_ERR_STATE。 */
+int32_t sortition_item_session_seal(const sortition_item_session *s, const uint8_t *key, uint8_t key_id,
+                                    char **out);
+int32_t sortition_item_session_unseal(const uint8_t *token, size_t len, const uint8_t *key,
+                                      const uint8_t *data, const size_t *lens, size_t count,
+                                      sortition_item_session **out);
 uint32_t sortition_item_session_remaining(const sortition_item_session *s);
 uint32_t sortition_item_session_drawn_count(const sortition_item_session *s);
 /* 状態を JSON 文字列として *out に返す（sortition_free で解放） */

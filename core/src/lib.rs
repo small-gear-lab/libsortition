@@ -14,8 +14,10 @@ mod data;
 mod hex;
 mod host;
 mod items;
+mod seal;
 mod session;
 pub use items::{candidate_ids, set_fingerprint, Id, ItemSession, Pick};
+pub use seal::{open as open_sealed, seal as seal_state, token_key_id};
 pub use session::{Session, StateError};
 pub use data::{
     draw_data, DataError, SORTITION_FORMAT_JSON, SORTITION_FORMAT_TOML, SORTITION_FORMAT_YAML,

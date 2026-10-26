@@ -166,6 +166,18 @@ impl ItemSession {
         .to_string()
     }
 
+    /// 状態に封をしてトークンにする。乱数の内部状態を相手に見せずに預けられる。
+    pub fn seal(&self, key: &crate::seal::Key, key_id: u8) -> Result<String, i32> {
+        crate::seal::seal(self.save().as_bytes(), key, key_id)
+    }
+
+    /// `seal` のトークンと、同じ候補集合（並びは違ってよい）から復元する。
+    pub fn unseal(token: &str, key: &crate::seal::Key, items: &[&[u8]]) -> Result<Self, StateError> {
+        let plain = crate::seal::open(token, key)?;
+        let text = String::from_utf8(plain).map_err(|_| StateError("sealed state is not UTF-8".to_string()))?;
+        Self::load(&text, items)
+    }
+
     /// `save` の出力と、同じ候補集合（並びは違ってよい）から復元する。
     /// 候補集合が違う、または状態が矛盾していれば `StateError`。
     pub fn load(state: &str, items: &[&[u8]]) -> Result<Self, StateError> {
@@ -543,6 +555,84 @@ pub unsafe extern "C" fn sortition_item_session_load(
     }
 }
 
+/// C ABI: 状態に封をしたトークンを `*out` に返す（`sortition_free` で解放）。引数は `sortition_session_seal` と同じ。
+///
+/// # Safety
+/// `s` は有効なセッション、`key` は 32 バイト読める領域、`out` は書き込み可能な `char*` 1 個分の領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_seal(
+    s: *const ItemSession,
+    key: *const u8,
+    key_id: u8,
+    out: *mut *mut c_char,
+) -> i32 {
+    if out.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    *out = std::ptr::null_mut();
+    let (Some(key), false) = (crate::seal::key_ref(key), s.is_null()) else {
+        return SORTITION_ERR_INVALID;
+    };
+    match (*s).seal(key, key_id).map(CString::new) {
+        Ok(Ok(c)) => {
+            *out = c.into_raw();
+            SORTITION_OK
+        }
+        Ok(Err(_)) => {
+            set_last_error("internal error: NUL in output");
+            SORTITION_ERR_INTERNAL
+        }
+        Err(e) => e,
+    }
+}
+
+/// C ABI: `sortition_item_session_seal` のトークンと、同じ候補集合（並びは違ってよい）から復元する。
+/// 形式の不正・鍵違い・改ざん・候補集合の不一致は `SORTITION_ERR_STATE`（詳細は `sortition_last_error`）。
+///
+/// # Safety
+/// `token` は `len` バイト読める領域、`key` は 32 バイト読める領域、`data` / `lens` は規約どおり、
+/// `out` は書き込み可能なポインタ 1 個分の領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_item_session_unseal(
+    token: *const u8,
+    len: usize,
+    key: *const u8,
+    data: *const u8,
+    lens: *const usize,
+    count: usize,
+    out: *mut *mut ItemSession,
+) -> i32 {
+    if out.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    *out = std::ptr::null_mut();
+    let Some(key) = crate::seal::key_ref(key) else {
+        return SORTITION_ERR_INVALID;
+    };
+    let token = match crate::seal::token_arg(token, len) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let items = match gather(data, lens, count) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    match std::panic::catch_unwind(|| ItemSession::unseal(token, key, &items)) {
+        Ok(Ok(s)) => {
+            *out = Box::into_raw(Box::new(s));
+            SORTITION_OK
+        }
+        Ok(Err(e)) => {
+            set_last_error(&e.0);
+            SORTITION_ERR_STATE
+        }
+        Err(_) => {
+            set_last_error("internal error: panic");
+            SORTITION_ERR_INTERNAL
+        }
+    }
+}
+
 /// C ABI: セッションを解放する。NULL は無視する。
 ///
 /// # Safety
@@ -680,6 +770,24 @@ mod tests {
         assert!(ItemSession::load("not json", &items).is_err());
         // 数値セッションの状態は別物として拒否する
         assert!(ItemSession::load(&Session::new(8, None).unwrap().save(), &items).is_err());
+    }
+
+    #[test]
+    fn seal_resumes_with_reordered_candidates_and_rejects_others() {
+        let key = [5u8; 32];
+        let items = names();
+        let mut s = ItemSession::new(&items, None).unwrap();
+        let first = s.draw(3).unwrap();
+        let token = s.seal(&key, 0).unwrap();
+
+        let mut shuffled = names();
+        shuffled.rotate_left(2);
+        let mut r = ItemSession::unseal(&token, &key, &shuffled).unwrap();
+        assert_eq!(ids_of(&r.drawn()), ids_of(&first));
+        assert_eq!(ids_of(&r.draw(5).unwrap()), ids_of(&s.draw(5).unwrap()));
+
+        assert!(ItemSession::unseal(&token, &key, &items[1..]).is_err());
+        assert!(ItemSession::unseal(&token, &[6u8; 32], &items).is_err());
     }
 
     #[test]

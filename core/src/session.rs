@@ -214,6 +214,19 @@ impl Session {
         .to_string()
     }
 
+    /// 状態に封をしてトークンにする（`save()` を `seal` で包む）。形式は `seal` のモジュールを参照。
+    /// 信頼できない相手（ブラウザなど）に預けるときは、`save()` ではなくこちらを使う。
+    pub fn seal(&self, key: &crate::seal::Key, key_id: u8) -> Result<String, i32> {
+        crate::seal::seal(self.save().as_bytes(), key, key_id)
+    }
+
+    /// `seal` のトークンから復元する。形式の不正・鍵違い・改ざん・中身の矛盾は `StateError`。
+    pub fn unseal(token: &str, key: &crate::seal::Key) -> Result<Self, StateError> {
+        let plain = crate::seal::open(token, key)?;
+        let text = String::from_utf8(plain).map_err(|_| StateError("sealed state is not UTF-8".to_string()))?;
+        Self::load(&text)
+    }
+
     /// `save` の出力から復元する。中身が矛盾していれば `SORTITION_ERR_STATE`。
     pub fn load(text: &str) -> Result<Self, StateError> {
         let bad = |m: &str| StateError(m.to_string());
@@ -536,6 +549,69 @@ pub unsafe extern "C" fn sortition_session_load(text: *const u8, len: usize, out
     }
 }
 
+/// C ABI: 状態に封をしたトークン（NUL 終端の ASCII）を `*out` に返す（`sortition_free` で解放）。
+/// 乱数の内部状態を相手に見せずに、状態を預けられる。
+///
+/// - `key` は 32 バイトの秘密鍵（暗号論的乱数で作る）。`key_id` は鍵の入れ替え用の目印（0〜255）。
+///
+/// # Safety
+/// `s` は有効なセッション、`key` は 32 バイト読める領域、`out` は書き込み可能な `char*` 1 個分の領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_session_seal(s: *const Session, key: *const u8, key_id: u8, out: *mut *mut c_char) -> i32 {
+    if out.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    *out = std::ptr::null_mut();
+    let (Some(key), false) = (crate::seal::key_ref(key), s.is_null()) else {
+        return SORTITION_ERR_INVALID;
+    };
+    match (*s).seal(key, key_id).map(CString::new) {
+        Ok(Ok(c)) => {
+            *out = c.into_raw();
+            SORTITION_OK
+        }
+        Ok(Err(_)) => {
+            set_last_error("internal error: NUL in output");
+            SORTITION_ERR_INTERNAL
+        }
+        Err(e) => e,
+    }
+}
+
+/// C ABI: `sortition_session_seal` のトークンから復元する。
+/// 形式の不正・鍵違い・改ざん・中身の矛盾は `SORTITION_ERR_STATE`（詳細は `sortition_last_error`）。
+///
+/// # Safety
+/// `token` は `len` バイト読める領域、`key` は 32 バイト読める領域、`out` は書き込み可能なポインタ 1 個分の領域であること。
+#[no_mangle]
+pub unsafe extern "C" fn sortition_session_unseal(token: *const u8, len: usize, key: *const u8, out: *mut *mut Session) -> i32 {
+    if out.is_null() {
+        return SORTITION_ERR_INVALID;
+    }
+    *out = std::ptr::null_mut();
+    let Some(key) = crate::seal::key_ref(key) else {
+        return SORTITION_ERR_INVALID;
+    };
+    let token = match crate::seal::token_arg(token, len) {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    match std::panic::catch_unwind(|| Session::unseal(token, key)) {
+        Ok(Ok(s)) => {
+            *out = Box::into_raw(Box::new(s));
+            SORTITION_OK
+        }
+        Ok(Err(e)) => {
+            set_last_error(&e.0);
+            SORTITION_ERR_STATE
+        }
+        Err(_) => {
+            set_last_error("internal error: panic");
+            SORTITION_ERR_INTERNAL
+        }
+    }
+}
+
 /// C ABI: セッションを解放する。NULL は無視する。
 ///
 /// # Safety
@@ -787,6 +863,66 @@ mod tests {
         assert!(bad(&|v| v["calls"][1][2] = json!(4))); // 引いた数をはみ出す
         assert!(bad(&|v| v["calls"][0][2] = json!(0))); // 0 個の記録
         assert!(bad(&|v| v["calls"] = json!("x")));
+    }
+
+    #[test]
+    fn seal_roundtrip_hides_rng_and_resumes() {
+        let key = [9u8; 32];
+        let mut s = Session::new(40, None).unwrap();
+        s.draw_keyed(5, Some("r1")).unwrap();
+        let token = s.seal(&key, 1).unwrap();
+        let state: Value = serde_json::from_str(&s.save()).unwrap();
+        let rng_key = state["rng"]["key"].as_str().unwrap();
+        assert!(!token.contains(rng_key)); // 乱数の鍵は見えない
+        assert!(!token.contains("chacha20"));
+
+        let mut r = Session::unseal(&token, &key).unwrap();
+        assert_eq!(r.save(), s.save());
+        // 封を開いて続きから引ける。キーの記録も引き継がれる
+        assert!(r.draw_keyed(5, Some("r1")).unwrap().replayed);
+        assert_eq!(r.draw(3).unwrap(), s.draw(3).unwrap());
+
+        assert!(Session::unseal(&token, &[8u8; 32]).is_err());
+        // 封はしてあるが中身が状態でない場合は、開けても復元で拒否する
+        let junk = crate::seal::seal(b"{}", &key, 1).unwrap();
+        assert!(Session::unseal(&junk, &key).is_err());
+        let not_utf8 = crate::seal::seal(&[0xff, 0xfe], &key, 1).unwrap();
+        assert!(Session::unseal(&not_utf8, &key).is_err());
+    }
+
+    #[test]
+    fn c_abi_seal_unseal() {
+        unsafe {
+            let key = [3u8; 32];
+            let mut s: *mut Session = std::ptr::null_mut();
+            assert_eq!(sortition_session_new(20, std::ptr::null(), &mut s), SORTITION_OK);
+            let mut buf = [0u32; 4];
+            assert_eq!(sortition_session_draw(s, 4, buf.as_mut_ptr()), SORTITION_OK);
+
+            let mut token: *mut c_char = std::ptr::null_mut();
+            assert_eq!(sortition_session_seal(s, key.as_ptr(), 5, &mut token), SORTITION_OK);
+            let text = std::ffi::CStr::from_ptr(token).to_bytes().to_vec();
+            crate::sortition_free(token);
+            let mut kid = 0u8;
+            assert_eq!(crate::seal::sortition_seal_key_id(text.as_ptr(), text.len(), &mut kid), SORTITION_OK);
+            assert_eq!(kid, 5);
+
+            let mut t: *mut Session = std::ptr::null_mut();
+            assert_eq!(sortition_session_unseal(text.as_ptr(), text.len(), key.as_ptr(), &mut t), SORTITION_OK);
+            assert_eq!(sortition_session_revision(t), 1);
+            assert_eq!((*t).save(), (*s).save());
+            sortition_session_free(t);
+
+            let wrong = [4u8; 32];
+            assert_eq!(sortition_session_unseal(text.as_ptr(), text.len(), wrong.as_ptr(), &mut t), SORTITION_ERR_STATE);
+            assert!(t.is_null());
+            assert_eq!(sortition_session_unseal(b"junk".as_ptr(), 4, key.as_ptr(), &mut t), SORTITION_ERR_STATE);
+            assert_eq!(crate::seal::sortition_seal_key_id(b"junk".as_ptr(), 4, &mut kid), SORTITION_ERR_STATE);
+            assert_eq!(sortition_session_unseal(text.as_ptr(), text.len(), std::ptr::null(), &mut t), SORTITION_ERR_INVALID);
+            let mut out: *mut c_char = std::ptr::null_mut();
+            assert_eq!(sortition_session_seal(s, std::ptr::null(), 0, &mut out), SORTITION_ERR_INVALID);
+            sortition_session_free(s);
+        }
     }
 
     #[test]
