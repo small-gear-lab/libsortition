@@ -170,3 +170,63 @@ test('session: エラー（超過・不正な状態・閉じた後）', () => {
   assert.throws(() => a.remaining, /closed/);
   assert.throws(() => s.createSession(-1), RangeError);
 });
+
+const names = ['alice', 'bob', 'carol', 'dave', 'erin', 'frank', 'grace', 'heidi'];
+const idsOf = (picks) => picks.map((p) => p.id);
+
+test('items: ID は SHA-256(接頭辞 || バイト列 || 出現番号)。重複しても一意で、バイナリも使える', () => {
+  assert.deepEqual(s.itemIds(['abc']), ['3b39139043226007aae3c88c03f4a1867e3cea04126ee893f8b395f7eb97899b']);
+  assert.deepEqual(s.itemIds([Buffer.from('abc')]), s.itemIds(['abc']));
+  const xabc = Buffer.from('xabc');
+  assert.deepEqual(s.itemIds([new Uint8Array(xabc.buffer, xabc.byteOffset + 1, 3)]), s.itemIds(['abc'])); // オフセット付き
+  const dup = s.itemIds(['x', 'x', '', '', new Uint8Array([255, 0, 254]), 'x']);
+  assert.equal(new Set(dup).size, 6);
+  assert.throws(() => s.itemIds([1]), TypeError);
+  assert.deepEqual(s.itemIds([]), []);
+});
+
+test('items: 並び順に依らず、同じ集合とシードなら同じ候補が当選する', () => {
+  const shuffled = [...names.slice(3), ...names.slice(0, 3)].reverse();
+  assert.equal(s.itemFingerprint(names), s.itemFingerprint(shuffled));
+  for (let seed = 0; seed < 10; seed++) {
+    const a = s.drawItems(names, 5, { seed });
+    const b = s.drawItems(shuffled, 5, { seed });
+    assert.deepEqual(idsOf(a), idsOf(b));
+    assert.deepEqual(a.map((p) => names[p.index]), b.map((p) => shuffled[p.index]));
+  }
+  assert.throws(() => s.drawItems(names, 9), (e) => e instanceof s.SortitionError && e.code === -1);
+  assert.deepEqual(s.drawItems([], 0), []);
+});
+
+test('itemSession: 分けて引いても一括と同じで、並びを変えても復元して続きから引ける', () => {
+  const a = s.createItemSession(names, { seed: 11n });
+  const got = a.draw(3);
+  const state = a.save();
+  a.close();
+  const shuffled = [...names.slice(3), ...names.slice(0, 3)];
+  const b = s.loadItemSession(state, shuffled);
+  const rest = b.draw(5);
+  got.push(...rest);
+  assert.deepEqual(idsOf(got), idsOf(s.drawItems(names, 8, { seed: 11n })));
+  assert.ok(rest.every((p) => s.itemIds(shuffled)[p.index] === p.id)); // index は渡し直した配列の位置
+  const saved = JSON.parse(b.save());
+  assert.deepEqual(saved.drawn, idsOf(got));
+  assert.equal(saved.fingerprint, s.itemFingerprint(names));
+  assert.equal(b.remaining, 0);
+  assert.equal(b.drawnCount, 8);
+  b.close();
+});
+
+test('itemSession: 候補が違う・超過・閉じた後・種類違いはエラー', () => {
+  const a = s.createItemSession(names, { seed: 1 });
+  a.draw(2);
+  const state = a.save();
+  assert.throws(() => s.loadItemSession(state, names.slice(1)), (e) => e instanceof s.SortitionError && e.code === -8);
+  assert.throws(() => s.loadItemSession(state, [...names.slice(1), 'mallory']), (e) => e.code === -8);
+  assert.throws(() => s.loadSession(state), (e) => e.code === -8); // 数値セッションとして読めない
+  assert.throws(() => a.draw(7), (e) => e.code === -1);
+  assert.equal(a.save(), state); // 失敗しても状態は変わらない
+  a.close();
+  a.close();
+  assert.throws(() => a.draw(1), /closed/);
+});

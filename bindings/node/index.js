@@ -8,6 +8,7 @@
 //   const lot = s.createSession(100, { seed: 1n }); // 続きから引ける抽選セッション
 //   lot.draw(3); const saved = lot.save();         // 保存して…
 //   s.loadSession(saved).draw(2);                  // …あとで続きから引く
+//   s.drawItems(["alice", Buffer.from([1, 2])], 1, { seed: 1n }); // [{ index, id }]（任意のバイト列）
 //   s.drawStages(["a", "b", "c", "d"], [{ name: "副賞", count: 3 }, { name: "大賞", count: 1 }]);
 const crypto = require('node:crypto');
 const native = require('./build/Release/sortition_node.node');
@@ -116,6 +117,95 @@ function loadSession(state) {
   return new Session(call(() => native.sessionLoad(String(state))));
 }
 
+// ---- バイト列の候補 ----
+// 各候補は ID（SHA-256、小文字 16 進 64 文字）に変換され、ID の昇順に並べてから引かれる。
+// 同じバイト列が複数あっても出現番号が混ざるので ID は一意。
+
+/** 候補（string は UTF-8、Buffer / TypedArray / ArrayBuffer はそのまま）を連結バッファと長さ配列にする */
+function packItems(items) {
+  const chunks = Array.from(items, (item) => {
+    let chunk;
+    if (typeof item === 'string') chunk = Buffer.from(item, 'utf8');
+    else if (item instanceof ArrayBuffer) chunk = Buffer.from(item);
+    else if (ArrayBuffer.isView(item)) chunk = Buffer.from(item.buffer, item.byteOffset, item.byteLength);
+    else throw new TypeError('candidate must be a string, Buffer, ArrayBuffer or a typed array');
+    if (chunk.length > 0xffffffff) throw new RangeError('candidate is too large');
+    return chunk;
+  });
+  return [Buffer.concat(chunks), Uint32Array.from(chunks, (c) => c.length)];
+}
+
+const hexIds = (buf, count) => Array.from({ length: count }, (_, i) => buf.toString('hex', 32 * i, 32 * i + 32));
+const picks = ({ indexes, ids }) => indexes.map((index, i) => ({ index, id: ids.toString('hex', 32 * i, 32 * i + 32) }));
+
+/** 各候補の ID（小文字 16 進 64 文字）を items と同じ並びで返す。 */
+function itemIds(items) {
+  const [data, lens] = packItems(items);
+  return hexIds(call(() => native.itemIds(data, lens)), lens.length);
+}
+
+/** 候補集合の指紋（小文字 16 進 64 文字）。items の並びに依らない。 */
+function itemFingerprint(items) {
+  const [data, lens] = packItems(items);
+  return call(() => native.itemFingerprint(data, lens)).toString('hex');
+}
+
+/** items から k 個を重複なしで抽選する。同じ候補集合とシードなら、items の並びが違っても同じ候補が当選する。 */
+function drawItems(items, k, { seed } = {}) {
+  u32(k, 'k');
+  const [data, lens] = packItems(items);
+  return picks(call(() => native.itemsDraw(data, lens, k, checkSeed(seed))));
+}
+
+/**
+ * 候補集合を固定した抽選セッション（保存・復元つき）。
+ * save() の状態には引いた候補の ID と候補集合の指紋が入る。loadItemSession() では同じ候補集合
+ * （並びは違ってよい）を渡し直し、違えば SortitionError（code -8）。close() し忘れても GC で解放される。
+ */
+class ItemSession {
+  #handle;
+
+  constructor(handle) {
+    this.#handle = handle;
+  }
+
+  /** 続きから k 個引く。残りを超えると SortitionError（状態は変わらない） */
+  draw(k) {
+    u32(k, 'k');
+    return picks(call(() => native.itemSessionDraw(this.#handle, k)));
+  }
+
+  get remaining() {
+    return native.itemSessionRemaining(this.#handle);
+  }
+
+  get drawnCount() {
+    return native.itemSessionDrawnCount(this.#handle);
+  }
+
+  /** 状態を JSON 文字列で返す。引いた候補の ID（"drawn"）と候補集合の指紋（"fingerprint"）を含む */
+  save() {
+    return call(() => native.itemSessionSave(this.#handle));
+  }
+
+  /** コア側のセッションを解放する（以後の利用は Error）。二重に呼んでもよい */
+  close() {
+    native.sessionClose(this.#handle);
+  }
+}
+
+/** 候補集合を固定した抽選セッションを作る。 */
+function createItemSession(items, { seed } = {}) {
+  const [data, lens] = packItems(items);
+  return new ItemSession(call(() => native.itemSessionNew(data, lens, checkSeed(seed))));
+}
+
+/** ItemSession#save() の出力と、同じ候補集合（並びは違ってよい）から復元する。 */
+function loadItemSession(state, items) {
+  const [data, lens] = packItems(items);
+  return new ItemSession(call(() => native.itemSessionLoad(String(state), data, lens)));
+}
+
 /**
  * 賞ごとに順番に抽選する（重複当選なし）。
  * 合計人数を重複なしで引いて、先頭から賞ごとに切り分ける。これは「1 つ目の賞を引き、
@@ -156,7 +246,8 @@ function normalizeCandidates(text) {
 }
 
 module.exports = {
-  draw, drawText, drawData, drawStages, createSession, loadSession, seedFromText, normalizeCandidates,
+  draw, drawText, drawData, drawStages, createSession, loadSession,
+  itemIds, itemFingerprint, drawItems, createItemSession, loadItemSession, seedFromText, normalizeCandidates,
   version: () => native.version(),
   SortitionError,
 };
