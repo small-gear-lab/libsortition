@@ -1,14 +1,29 @@
 # libsortition
 
 [![CI](https://github.com/small-gear-lab/libsortition/actions/workflows/ci.yml/badge.svg)](https://github.com/small-gear-lab/libsortition/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/sortition?label=crates.io)](https://crates.io/crates/sortition)
+[![npm](https://img.shields.io/npm/v/libsortition-wasm?label=npm)](https://www.npmjs.com/package/libsortition-wasm)
+[![NuGet](https://img.shields.io/nuget/v/Sortition?label=NuGet)](https://www.nuget.org/packages/Sortition)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#ライセンス)
 
 [English](README.md)
 
-公平な無作為抽選のための小さなライブラリです。`n` 個の候補から `k` 個を重複なしで選び、あとから誰でも同じ抽選を繰り返して確かめられます。C ABI を持つ Rust 製のコアが 1 つあり、Node.js、PHP、Python、Ruby、WebAssembly 向けのバインディングと、`sortition` コマンドがあります。
+公平な無作為抽選のための小さなライブラリです。`n` 個の候補から `k` 個を重複なしで選び、あとから誰でも同じ抽選を繰り返して確かめられます。
 
-> **状態: 実験的（0.1）。** インターフェースは 1.0 までに変わるかもしれません。
+C ABI を持つ Rust 製のコアが 1 つあり、Python、Ruby、PHP、Node.js、WebAssembly、.NET、Go、Java と Kotlin、Swift、Dart のバインディングと、`sortition` コマンドがあります。同じ候補と seed なら、すべてが同じ当選者を出します。
+
+> **状態: 実験的（0.1）。** インターフェースは 1.0 までに変わるかもしれません。また、このライブラリは監査を受けていません。[公平さと安全性](#公平さと安全性)を読んでください。
 
 **試す:** [デモ](https://small-gear-lab.github.io/libsortition/latest/demo/)では、貼り付けたリストから賞ごとに抽選できます。すべてのビルドは <https://small-gear-lab.github.io/libsortition/> に並んでいます。
+
+## 抽選を確かめる流れ
+
+1. **抽選の前に**、候補リストの指紋と、seed 文字列の SHA-256（コミット値）を公開します。
+2. その seed で**抽選**します。賞ごとに、最初の賞を引き、残りから次の賞を引くこともできます。
+3. **抽選のあとに**、seed 文字列と当選者を公開します。
+4. 候補リストを持っている**誰でも**、もう一度引いて同じ当選者になることを確かめられます（`sortition verify` がやってくれます）。リストの並びは問いません。
+
+規則は [docs/SPEC.md](docs/SPEC.md)（概要は[日本語](docs/SPEC.ja.md)）に書いてあり、[テストベクトル](test-vectors/vectors.json)と、独立した[参照実装](test-vectors/reference.py)があるので、どの言語のプログラムでも同じ抽選を繰り返せます。
 
 ## クイックスタート
 
@@ -22,6 +37,36 @@ printf 'alice\nbob\ncarol\ndave\n' > names.txt
 sortition draw names.txt --seed "my seed" -k 2
 ```
 
+**JavaScript**（WebAssembly。Node.js 22 以降とブラウザ）:
+
+```sh
+npm install libsortition-wasm
+```
+
+```js
+import { load, seedFromText } from "libsortition-wasm";
+const s = await load();
+
+const people = ["alice", "bob", "carol", "dave"];
+const seed = await seedFromText("my seed");
+for (const pick of s.drawItems(people, 2, { seed })) console.log(people[pick.index]);
+```
+
+**ブラウザで、何もインストールしない:** どのリリースも GitHub Pages から静的ファイルとして配信しているので、バンドラも npm も使わず、ふつうの `<script type="module">` から import できます。
+
+```html
+<script type="module">
+  import { load, seedFromText } from "https://small-gear-lab.github.io/libsortition/v0.1.1/sortition.js";
+  const s = await load();   // 同じフォルダの sortition.wasm を読む
+
+  const people = ["alice", "bob", "carol", "dave"];
+  const seed = await seedFromText("my seed");
+  for (const pick of s.drawItems(people, 2, { seed })) console.log(people[pick.index]);
+</script>
+```
+
+`persist.js` も同じフォルダにあります。第三者に信頼してもらう抽選では、`/latest/` や `/next/` ではなく、`/v0.1.1/` のようなバージョン付きのフォルダを使ってください。バージョン付きのフォルダは変わらず、`manifest.json` に全ファイルの SHA-384 ハッシュがあるので、ファイルを照合できます。すべてのビルドは <https://small-gear-lab.github.io/libsortition/> に並んでいます。
+
 **Python**（チェックアウトから）:
 
 ```python
@@ -34,33 +79,20 @@ for pick in sortition.draw_items(people, 2, seed=seed):
     print(people[pick.index])
 ```
 
-**JavaScript**（WebAssembly）:
-
-```js
-import { load, seedFromText } from "./sortition.js";   // bindings/wasm。bindings/wasm/build.sh のあと
-const s = await load();
-
-const people = ["alice", "bob", "carol", "dave"];
-const seed = await seedFromText("my seed");
-for (const pick of s.drawItems(people, 2, { seed })) console.log(people[pick.index]);
-```
-
 **C と C++**（[examples/c/demo.c](examples/c/demo.c) は両方でビルドできます）: `cargo build --release` のあと、`make -C examples/c run` を実行します。[core/include/sortition.h](core/include/sortition.h) を include して、`libsortition` にリンクしてください。
 
-## どの関数を使うか
-
-当選者がリストの並びに依ってはいけないときは、候補の関数（`draw_items` / `drawItems`、`draw_stages` / `drawStages`、候補のセッション、CLI）を使ってください。各候補はバイト列から ID が決まり、抽選は ID を昇順に並べた上で行われます。ほかの入口（`draw(n, k)`、テキストや JSON・YAML・TOML からの抽選）は、渡したリストの位置を返すので、リストの並びを変えると当選者も変わります。
+ほかの言語は、[ライブラリの使い方](#ライブラリの使い方)の表を見てください。
 
 ## できること
 
 - **公平な抽選。** 剰余の偏りのない非復元抽出（棄却法）。`draw(n, k)` は `0..n` から重複しない `k` 個の数を選びます。
-- **繰り返せて、確かめられる。** 抽選の前に公開できる seed 文字列の SHA-256（コミット値）と、並びに依らない候補集合の指紋があります。同じ候補と seed なら、どの言語でもコマンドでも同じ当選者になります。規則は [docs/SPEC.md](docs/SPEC.md)（概要は[日本語](docs/SPEC.ja.md)）に書いてあり、[テストベクトル](test-vectors/vectors.json)と、独立した[参照実装](test-vectors/reference.py)があります。
-- **任意のバイト列を候補にできる。** 各候補には位置に依らない ID が付くので、当選者はリストの並びに依りません。同じ内容の項目は別の候補のままです。テストの行や、JSON・YAML・TOML の配列も使えます。
+- **繰り返せて、確かめられる。** 抽選の前に公開できる seed 文字列の SHA-256（コミット値）と、並びに依らない候補集合の指紋があります。同じ候補と seed なら、どの言語でもコマンドでも同じ当選者になります。
+- **任意のバイト列を候補にできる。** 各候補にはバイト列から決まる ID が付くので、当選者はリストの並びに依りません。同じ内容の項目は別の候補のままです。テキストの行や、JSON・YAML・TOML の配列も使えます。
 - **賞ごとの抽選。** 最初の賞を引き、残りから次の賞を引きます。同じ人が 2 つに当たることはありません。
-- **途中で止められるセッション。** 状態を JSON で保存して、あとで続きから引けます。再送されたリクエストは羃等キーで、二重に引きません。封をしたトークン（XChaCha20-Poly1305）で、ブラウザに、読めず変えられない状態を預けられます。`persist.js` は IndexedDB にセッションを保存するので、リロードしても何も失われません。
+- **途中で止められるセッション。** 状態を JSON で保存して、あとで続きから引けます。再送されたリクエストは冪等キーで、二重に引きません。封をしたトークン（XChaCha20-Poly1305）で、ブラウザに、読めず変えられない状態を預けられます。`persist.js` は IndexedDB にセッションを保存するので、リロードしても何も失われません。
 - **C ABI**（[core/include/sortition.h](core/include/sortition.h)）が、そのすべての土台です。
 
-## インストールとビルド
+## インストール
 
 公開している場所は次のとおりです。
 
@@ -69,11 +101,13 @@ for (const pick of s.drawItems(people, 2, { seed })) console.log(people[pick.ind
 | Rust のクレート | [crates.io: `sortition`](https://crates.io/crates/sortition) |
 | `sortition` コマンド | `cargo install sortition-cli`（[crates.io](https://crates.io/crates/sortition-cli)）、または[リリースのページ](https://github.com/small-gear-lab/libsortition/releases)のバイナリ |
 | 共有ライブラリと C のヘッダ | [リリースのページ](https://github.com/small-gear-lab/libsortition/releases)（Linux、macOS、Windows） |
-| WebAssembly | [npm: `libsortition-wasm`](https://www.npmjs.com/package/libsortition-wasm)、[デモとビルド](https://small-gear-lab.github.io/libsortition/) |
+| WebAssembly | [npm: `libsortition-wasm`](https://www.npmjs.com/package/libsortition-wasm)、または[GitHub Pages](https://small-gear-lab.github.io/libsortition/) のバージョン付きビルドを、何もインストールせずに直接 import（クイックスタート参照） |
 | .NET | [NuGet: `Sortition`](https://www.nuget.org/packages/Sortition)（実行時に共有ライブラリが要ります） |
 | Python、Ruby、PHP、Go、Java と Kotlin、Swift、Dart | いまのところ、このリポジトリのチェックアウトから |
 
-リリースのページのファイルはすべて `SHA256SUMS` に載っていて、ビルドの来歴の証明（attestation）が付いています（`gh attestation verify <ファイル> --repo small-gear-lab/libsortition`）。チェックアウトからすべてをビルドするには:
+リリースのページのファイルはすべて `SHA256SUMS` に載っていて、ビルドの来歴の証明（attestation）が付いています（`gh attestation verify <ファイル> --repo small-gear-lab/libsortition`）。
+
+チェックアウトからすべてをビルドするには（Rust 1.85 以降）:
 
 ```sh
 cargo build --release                         # target/release/libsortition.so（.dylib、.dll）
@@ -86,24 +120,13 @@ bindings/wasm/build.sh                        # WebAssembly のビルド。事�
 
 **Node.js:** WebAssembly 版（`libsortition-wasm`）を使ってください。コンパイラが要らず、Node.js でそのまま動きます。`bindings/node` のネイティブアドオン（`cd bindings/node && npm install && npm run build`）は実験用で、Linux と macOS でしかビルドできません。
 
-## 構成
-
-| パス | 内容 |
-|---|---|
-| `core/` | Rust のクレート（`cdylib` と `rlib`）と C ヘッダ |
-| `cli/` | `sortition` コマンド（リストからの抽選と、記録した抽選の検証） |
-| `bindings/dotnet/` | .NET: C#、F#、VB.NET（P/Invoke、.NET 10） |
-| `bindings/dart/` | Dart（`dart:ffi`。Dart VM と、デスクトップの Flutter） |
-| `bindings/go/` | Go（WebAssembly を wazero で動かす。cgo なし） |
-| `bindings/java/` | Java 25（Foreign Function & Memory API。Kotlin からも使える） |
-| `bindings/node/` | Node.js（N-API ネイティブアドオン） |
-| `bindings/php/` | PHP 拡張（PHP 8.2 以降） |
-| `bindings/python/` | Python（ctypes、依存なし） |
-| `bindings/ruby/` | Ruby（Fiddle、標準ライブラリのみ） |
-| `bindings/swift/` | Swift（SwiftPM。`Package.swift` はリポジトリ直下） |
-| `bindings/wasm/` | ブラウザと Node 向けの WebAssembly（依存なし）とデモ |
-
 ## ライブラリの使い方
+
+### どの関数を使うか
+
+当選者がリストの並びに依ってはいけないときは、候補の関数（`draw_items` / `drawItems`、`draw_stages` / `drawStages`、候補のセッション、CLI）を使ってください。各候補はバイト列から ID が決まり、抽選は ID を昇順に並べた上で行われます。ほかの入口（`draw(n, k)`、テキストや JSON・YAML・TOML からの抽選）は、渡したリストの位置を返すので、リストの並びを変えると当選者も変わります。
+
+### 例（Python）
 
 ```python
 import sys; sys.path.insert(0, "bindings/python")
@@ -130,6 +153,8 @@ state = lot.save()                          # 引いた ID と指紋を含む
 sortition.ItemSession.load(state, reversed(people)).draw(1)   # 同じ集合なら並びは自由
 ```
 
+### どの言語でも同じ関数
+
 バイト列・文字列の候補とセッションは、どのバインディングにもあります。違うのは名前だけです。ID と指紋は小文字の 16 進文字列で、当選は `index`（渡したリストの中の位置）と `id` です。
 
 | 言語 | 候補の抽選（順序に依らない） | `0..n-1` のセッション | 候補のセッション | 詳細 |
@@ -147,11 +172,11 @@ sortition.ItemSession.load(state, reversed(people)).draw(1)   # 同じ集合な�
 
 ### リロードや HTTP セッション切れのあとに続きから引く
 
-**サーバーなし**（静的なページと WebAssembly）の場合: `bindings/wasm/persist.js` が、引くたびにセッションを IndexedDB（なければ `localStorage`、それもなければメモリ）に保存します。
+**サーバーなし**（静的なページと WebAssembly）の場合: npm パッケージの `persist.js`（`libsortition-wasm/persist.js`。チェックアウトでは `bindings/wasm/persist.js`）が、引くたびにセッションを IndexedDB（なければ `localStorage`、それもなければメモリ）に保存します。
 
 ```js
-import { load } from "./sortition.js";
-import { createPersistence } from "./persist.js";
+import { load } from "libsortition-wasm";
+import { createPersistence } from "libsortition-wasm/persist.js";
 
 const lots = createPersistence(await load());
 const lot = await lots.createItems(["alice", "bob", "carol"], { seed: 42n });
@@ -162,7 +187,7 @@ const again = await lots.resume(lot.id);   // その id で保存されたもの
 await again.draw(1);                       // 止まったところから続き。当選者は重複しない
 ```
 
-- `draw` には羃等キーが付きます（`{ key }` を渡さなければ自動で作ります）。保存に失敗してやり直しても、二重に引きません。同じキーで別の `k` を渡すとエラー（コード `-9`）です。
+- `draw` には冪等キーが付きます（`{ key }` を渡さなければ自動で作ります）。保存に失敗してやり直しても、二重に引きません。同じキーで別の `k` を渡すとエラー（コード `-9`）です。
 - 保存は、保存されている `revision` が読んだときのものと一致するときだけ成功します。Web Locks で、タブ同士が同時に引くのも防ぎます。古い状態のタブは、保存されている状態を読み直して続きから引きます。
 - `export()` / `import()` で、セッションをテキストにして別の端末へ移せます。乱数の内部状態を含むので、本人以外には渡さないでください。
 - `demo/index.html` がこれを使っています。メインの抽選のあと、辞退が出たときに補欠を 1 人ずつ引け、リロードしても全部元に戻ります。
@@ -194,7 +219,7 @@ picks = lot.draw(3, key=request_id)                # 再送されたリクエス
 new_token = lot.seal(key)                          # picks と new_token をブラウザに返す
 ```
 
-次の抽選は保存状態だけで決まるので、古いトークンを送り直しても同じ結果になります。すでに進んだトークンが再送された場合は、羃等キーが二重に引くのを防ぎます。セッションを保存するサーバーなら、レコードを上書きする前に `revision` を比べることもできます。考え方はどのバインディングでも同じです（`seal` / `unseal` / `sealKeyId`）。
+次の抽選は保存状態だけで決まるので、古いトークンを送り直しても同じ結果になります。すでに進んだトークンが再送された場合は、冪等キーが二重に引くのを防ぎます。セッションを保存するサーバーなら、レコードを上書きする前に `revision` を比べることもできます。考え方はどのバインディングでも同じです（`seal` / `unseal` / `sealKeyId`）。
 
 主催者が結果を捨てて、新しいセッションを作り直すことは、この仕組みでは防げません。抽選の前に、セッションの `id`、候補集合の指紋、seed のコミット値を公開してください。
 
@@ -221,16 +246,41 @@ libsortition は、便利なだけでなく、公平な抽選であることを�
 - **偏りのない選び方。** 棄却法で剰余の偏りを取り除くので、どの候補も同じ確率で選ばれます。分布はテストで確かめています。
 - **既定で強い乱数源。** シードなしでは、暗号論的な乱数（OS から取った鍵で回す ChaCha20）を使います。シードありでは xoshiro256\*\* を使い、再現はできますが暗号論的ではありません。
 - **抽選のあとで確かめられる。** 候補集合には並びに依らない指紋があり、シードは抽選の前にコミット（たとえば SHA-256 のハッシュ）できます。
-- **保存しても、やり直してもよい。** 保存した状態には封をできるので、ブラウザに預けても、中身を読まれたり変えられたりしません。羃等キーで、再送されたリクエストが二重に引くのも防ぎます。
+- **保存しても、やり直してもよい。** 保存した状態には封をできるので、ブラウザに預けても、中身を読まれたり変えられたりしません。冪等キーで、再送されたリクエストが二重に引くのも防ぎます。
 
 引き受けられないこと:
 
 - **主催者が結果を操作するのを止めること。** 都合のいいシードを選ぶ、結果を捨ててやり直す、といったことはコードでは防げません。第三者に信頼してもらう抽選では、先に候補集合の指紋とシードのコミット値を公開し、そのあと誰にも操作できない値（たとえば公開の乱数ビーコン）を混ぜてシードにしてください。
 - **レビューの代わりになること。** このライブラリは監査を受けておらず、0.1 の間は変わることもあります。抽選、景品、記録の保存に関する決まりは、ライブラリの範囲外です。
 
-抽選のやり方は、[docs/SPEC.md](docs/SPEC.md)（概要は[日本語](docs/SPEC.ja.md)）に正確に書いてあります。[テストベクトル](test-vectors/vectors.json)と、その文面だけから書いた[参照実装](test-vectors/reference.py)もあり、ほかのプログラムでも同じ抽選を繰り返せます。
+`save()` が返すものには、乱数の内部状態が入っています。信頼できない相手には、封をしたトークンを渡してください。脆弱性を報告するには [SECURITY.md](SECURITY.md) を見てください。
 
-`save()` が返すものには、乱数の内部状態が入っています。信頼できない相手には、封をしたトークンを渡してください。
+## 構成
+
+| パス | 内容 |
+|---|---|
+| `core/` | Rust のクレート（`cdylib` と `rlib`）と C ヘッダ |
+| `cli/` | `sortition` コマンド（リストからの抽選と、記録した抽選の検証） |
+| `bindings/dotnet/` | .NET: C#、F#、VB.NET（P/Invoke、.NET 10） |
+| `bindings/dart/` | Dart（`dart:ffi`。Dart VM と、デスクトップの Flutter） |
+| `bindings/go/` | Go（WebAssembly を wazero で動かす。cgo なし） |
+| `bindings/java/` | Java 25（Foreign Function & Memory API。Kotlin からも使える） |
+| `bindings/node/` | Node.js（N-API ネイティブアドオン） |
+| `bindings/php/` | PHP 拡張（PHP 8.2 以降） |
+| `bindings/python/` | Python（ctypes、依存なし） |
+| `bindings/ruby/` | Ruby（Fiddle、標準ライブラリのみ） |
+| `bindings/swift/` | Swift（SwiftPM。`Package.swift` はリポジトリ直下） |
+| `bindings/wasm/` | ブラウザと Node 向けの WebAssembly（依存なし）とデモ |
+| `docs/` | 抽選の[仕様](docs/SPEC.md)（概要は[日本語](docs/SPEC.ja.md)） |
+| `test-vectors/` | 共通のテストベクトルと、Python の参照実装 |
+| `examples/c/` | C と C++ のプログラム |
+
+## そのほか
+
+- [docs/SPEC.md](docs/SPEC.md)（概要は[日本語](docs/SPEC.ja.md)）: 抽選のアルゴリズムを正確に書いたもの。
+- [CHANGELOG.md](CHANGELOG.md): リリースごとの変更点。
+- [SECURITY.md](SECURITY.md): 脆弱性の報告のしかた。
+- [AGENTS.md](AGENTS.md): このリポジトリのビルド、テスト、リリースの進め方（コントリビューター向け）。
 
 ## ライセンス
 
